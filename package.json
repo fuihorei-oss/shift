@@ -7,7 +7,8 @@
     "setup": "node setup.mjs",
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy": "vite build && firebase deploy --only hosting --project shift-97e6f"
   },
   "dependencies": {
     "firebase": "^10.12.0",

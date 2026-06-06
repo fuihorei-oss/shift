@@ -5,6 +5,7 @@ import { auth, db } from './firebase';
 import Login from './components/Login';
 import FloorPlanView from './components/FloorPlanView';
 import CalendarPage from './components/CalendarPage';
+import AttendancePage from './components/AttendancePage';
 import AdminDashboard from './components/AdminDashboard';
 
 export const AuthContext = createContext(null);
@@ -65,12 +66,14 @@ export default function App() {
         <main className="flex-1 overflow-hidden">
           {activeTab === 'floor' && <FloorPlanView />}
           {activeTab === 'calendar' && <CalendarPage />}
+          {activeTab === 'attend' && <AttendancePage />}
           {activeTab === 'admin' && isAdmin && <AdminDashboard />}
         </main>
 
         <nav className="bg-white border-t border-gray-200 flex flex-shrink-0 safe-area-bottom">
           <TabButton active={activeTab === 'floor'} onClick={() => setActiveTab('floor')} label="配置図" icon="📋" />
           <TabButton active={activeTab === 'calendar'} onClick={() => setActiveTab('calendar')} label="カレンダー" icon="📅" />
+          <TabButton active={activeTab === 'attend'} onClick={() => setActiveTab('attend')} label="打刻" icon="🕐" />
           {isAdmin && (
             <TabButton active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} label="管理" icon="⚙️" />
           )}

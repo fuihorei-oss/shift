@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { doc, setDoc, getDoc, collection, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../App';
@@ -17,32 +17,48 @@ export default function CalendarPage() {
   const [allAvail, setAllAvail] = useState({});
   const [staffList, setStaffList] = useState([]);
   const [pickedDate, setPickedDate] = useState(null);
-  const [sheet, setSheet]   = useState(false);
+
+  // スタッフ用：自分の時間入力シート
+  const [sheet, setSheet]     = useState(false);
   const [startTime, setStart] = useState('18:00');
   const [endTime,   setEnd]   = useState('23:00');
 
-  // 自分の出勤可能日を読み込む
+  // 管理者用：スタッフ編集シート
+  const [editTarget, setEditTarget] = useState(null); // { id, name, startTime, endTime }
+  const [editStart, setEditStart]   = useState('18:00');
+  const [editEnd,   setEditEnd]     = useState('23:00');
+
+  // 管理者用：スタッフ追加ピッカー
+  const [addPicker, setAddPicker]   = useState(false);
+  const [addTarget, setAddTarget]   = useState(null); // { id, name }
+  const [addStart,  setAddStart]    = useState('18:00');
+  const [addEnd,    setAddEnd]      = useState('23:00');
+  const [addStep,   setAddStep]     = useState('pick'); // 'pick' | 'time'
+
+  // ── データ読み込み ──────────────────────────────────
   useEffect(() => {
     getDoc(doc(db, 'availability', user.uid)).then((snap) => {
       if (snap.exists()) setMyAvail(snap.data().dates ?? {});
     });
   }, [user.uid]);
 
-  // 管理者：全スタッフの出勤可能日を読み込む
-  useEffect(() => {
-    if (!isAdmin) return;
-    Promise.all([
+  const loadAllAvail = useCallback(async () => {
+    const [avSnap, uSnap] = await Promise.all([
       getDocs(collection(db, 'availability')),
       getDocs(collection(db, 'users')),
-    ]).then(([avSnap, uSnap]) => {
-      const av = {};
-      avSnap.docs.forEach((d) => { av[d.id] = d.data().dates ?? {}; });
-      setAllAvail(av);
-      setStaffList(uSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
-  }, [isAdmin, month, year]);
+    ]);
+    const av = {};
+    avSnap.docs.forEach((d) => { av[d.id] = d.data().dates ?? {}; });
+    setAllAvail(av);
+    setStaffList(uSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  }, []);
 
-  const saveAvail = async (dateStr, available, s, e) => {
+  useEffect(() => {
+    if (isAdmin) loadAllAvail();
+  }, [isAdmin, month, year, loadAllAvail]);
+
+  // ── 自分の出勤可能日保存（スタッフ用） ──────────────
+  const saveMyAvail = async (dateStr, available, s, e) => {
     const next = { ...myAvail };
     if (available) next[dateStr] = { available: true, startTime: s, endTime: e };
     else delete next[dateStr];
@@ -56,6 +72,19 @@ export default function CalendarPage() {
     setPickedDate(null);
   };
 
+  // ── 任意スタッフの出勤可能日保存（管理者用） ─────────
+  const saveStaffAvail = async (staffId, staffName, dateStr, available, s, e) => {
+    const ref = doc(db, 'availability', staffId);
+    const snap = await getDoc(ref);
+    const existing = snap.exists() ? snap.data().dates ?? {} : {};
+    const next = { ...existing };
+    if (available) next[dateStr] = { available: true, startTime: s, endTime: e };
+    else delete next[dateStr];
+    await setDoc(ref, { staffId, staffName, dates: next });
+    await loadAllAvail();
+  };
+
+  // ── 日付タップ ──────────────────────────────────────
   const onDayClick = (dateStr) => {
     setPickedDate(dateStr);
     if (isAdmin) return;
@@ -71,12 +100,18 @@ export default function CalendarPage() {
   const daysInMonth  = new Date(year, month + 1, 0).getDate();
   const firstWeekday = new Date(year, month, 1).getDay();
 
+  // 選択日の出勤可能スタッフ
   const availableStaff = pickedDate && isAdmin
     ? staffList.filter((s) => allAvail[s.id]?.[pickedDate]?.available).map((s) => ({
         ...s,
         startTime: allAvail[s.id][pickedDate].startTime,
         endTime:   allAvail[s.id][pickedDate].endTime,
       }))
+    : [];
+
+  // 未登録スタッフ（追加ピッカー用）
+  const unavailableStaff = pickedDate
+    ? staffList.filter((s) => !allAvail[s.id]?.[pickedDate]?.available)
     : [];
 
   return (
@@ -113,7 +148,7 @@ export default function CalendarPage() {
                 onClick={() => onDayClick(dateStr)}
                 className={`rounded-lg border min-h-[52px] p-1 flex flex-col items-center cursor-pointer
                   ${isToday ? 'border-blue-400' : 'border-gray-100'}
-                  ${mine ? 'bg-green-50 border-green-300' : 'active:bg-gray-50'}
+                  ${mine && !isAdmin ? 'bg-green-50 border-green-300' : 'active:bg-gray-50'}
                   ${pickedDate === dateStr && isAdmin ? 'ring-2 ring-blue-400' : ''}
                 `}
               >
@@ -129,18 +164,53 @@ export default function CalendarPage() {
           })}
         </div>
 
-        {/* 管理者：選択日のスタッフ一覧 */}
+        {/* 管理者：選択日のスタッフ一覧（編集機能付き） */}
         {isAdmin && pickedDate && (
           <div className="mt-4 bg-white rounded-xl border border-gray-100 p-4">
-            <h3 className="font-semibold text-sm mb-3">{pickedDate} 出勤可能スタッフ</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-sm">{pickedDate} 出勤可能スタッフ</h3>
+              <button
+                onClick={() => { setAddStep('pick'); setAddPicker(true); }}
+                className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-semibold"
+              >
+                ＋ 追加
+              </button>
+            </div>
+
             {availableStaff.length === 0 ? (
               <p className="text-gray-400 text-sm">出勤可能なスタッフはいません</p>
             ) : (
-              <div className="space-y-2">
+              <div className="space-y-1">
                 {availableStaff.map((s) => (
-                  <div key={s.id} className="flex justify-between items-center py-2 border-b border-gray-50 last:border-0">
-                    <span className="font-medium text-sm">{s.name}</span>
-                    <span className="text-xs text-gray-500">{s.startTime} 〜 {s.endTime}</span>
+                  <div key={s.id} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
+                    <div>
+                      <div className="font-medium text-sm">{s.name}</div>
+                      <div className="text-xs text-gray-400">{s.startTime} 〜 {s.endTime}</div>
+                    </div>
+                    <div className="flex gap-1">
+                      {/* 編集 */}
+                      <button
+                        onClick={() => {
+                          setEditTarget({ id: s.id, name: s.name });
+                          setEditStart(s.startTime);
+                          setEditEnd(s.endTime);
+                        }}
+                        className="text-xs border border-gray-200 px-2 py-1 rounded-lg text-gray-600"
+                      >
+                        編集
+                      </button>
+                      {/* 削除 */}
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`${s.name} の ${pickedDate} の出勤登録を削除しますか？`)) {
+                            saveStaffAvail(s.id, s.name, pickedDate, false);
+                          }
+                        }}
+                        className="text-xs border border-red-200 px-2 py-1 rounded-lg text-red-500"
+                      >
+                        削除
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -156,43 +226,122 @@ export default function CalendarPage() {
         )}
       </div>
 
-      {/* 時間入力シート（スタッフ用） */}
+      {/* ── スタッフ用：時間入力シート ── */}
       {sheet && pickedDate && (
-        <div className="fixed inset-0 bg-black/50 flex items-end z-50" onClick={(e) => e.target === e.currentTarget && setSheet(false)}>
-          <div className="bg-white w-full rounded-t-2xl p-6">
-            <h2 className="font-bold text-base mb-1">{pickedDate}</h2>
-            <p className="text-gray-400 text-xs mb-5">出勤可能な時間を入力してください</p>
-
-            <div className="grid grid-cols-2 gap-4 mb-6">
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">開始時間</label>
-                <input type="time" value={startTime} onChange={(e) => setStart(e.target.value)}
-                  className="w-full border border-gray-200 rounded-xl px-3 py-3 text-center text-base" />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">終了時間</label>
-                <input type="time" value={endTime} onChange={(e) => setEnd(e.target.value)}
-                  className="w-full border border-gray-200 rounded-xl px-3 py-3 text-center text-base" />
-              </div>
-            </div>
-
-            <div className="flex gap-2">
-              {myAvail[pickedDate] && (
-                <button onClick={() => saveAvail(pickedDate, false)} className="flex-1 py-3 rounded-xl border border-red-200 text-red-500 text-sm font-semibold">
-                  削除
-                </button>
-              )}
-              <button onClick={() => setSheet(false)} className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-500 text-sm font-semibold">
-                キャンセル
-              </button>
-              <button onClick={() => saveAvail(pickedDate, true, startTime, endTime)}
-                className="flex-1 py-3 rounded-xl bg-blue-600 text-white text-sm font-semibold active:bg-blue-700">
-                保存
-              </button>
-            </div>
+        <BottomSheet title={pickedDate} onClose={() => setSheet(false)}>
+          <p className="text-gray-400 text-xs mb-5">出勤可能な時間を入力してください</p>
+          <TimeInputs start={startTime} end={endTime} onStart={setStart} onEnd={setEnd} />
+          <div className="flex gap-2 mt-6">
+            {myAvail[pickedDate] && (
+              <button onClick={() => saveMyAvail(pickedDate, false)}
+                className="flex-1 py-3 rounded-xl border border-red-200 text-red-500 text-sm font-semibold">削除</button>
+            )}
+            <button onClick={() => setSheet(false)}
+              className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-500 text-sm font-semibold">キャンセル</button>
+            <button onClick={() => saveMyAvail(pickedDate, true, startTime, endTime)}
+              className="flex-1 py-3 rounded-xl bg-blue-600 text-white text-sm font-semibold">保存</button>
           </div>
-        </div>
+        </BottomSheet>
       )}
+
+      {/* ── 管理者用：スタッフ編集シート ── */}
+      {editTarget && pickedDate && (
+        <BottomSheet title={`${editTarget.name} — ${pickedDate}`} onClose={() => setEditTarget(null)}>
+          <p className="text-gray-400 text-xs mb-5">出勤可能時間を編集してください</p>
+          <TimeInputs start={editStart} end={editEnd} onStart={setEditStart} onEnd={setEditEnd} />
+          <div className="flex gap-2 mt-6">
+            <button onClick={() => setEditTarget(null)}
+              className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-500 text-sm font-semibold">キャンセル</button>
+            <button
+              onClick={async () => {
+                await saveStaffAvail(editTarget.id, editTarget.name, pickedDate, true, editStart, editEnd);
+                setEditTarget(null);
+              }}
+              className="flex-1 py-3 rounded-xl bg-blue-600 text-white text-sm font-semibold">保存</button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* ── 管理者用：スタッフ追加ピッカー ── */}
+      {addPicker && pickedDate && (
+        <BottomSheet
+          title={addStep === 'pick' ? `${pickedDate} — スタッフを選択` : `${addTarget?.name} — 時間を設定`}
+          onClose={() => { setAddPicker(false); setAddTarget(null); }}
+        >
+          {addStep === 'pick' ? (
+            <>
+              <p className="text-gray-400 text-xs mb-4">まだ登録していないスタッフを選択</p>
+              <div className="space-y-2 max-h-60 overflow-y-auto mb-4">
+                {unavailableStaff.length === 0 ? (
+                  <p className="text-gray-400 text-sm text-center py-4">全スタッフが登録済みです</p>
+                ) : (
+                  unavailableStaff.map((s) => (
+                    <div
+                      key={s.id}
+                      onClick={() => { setAddTarget(s); setAddStart('18:00'); setAddEnd('23:00'); setAddStep('time'); }}
+                      className="p-3 rounded-xl border border-gray-100 cursor-pointer active:bg-blue-50 flex items-center justify-between"
+                    >
+                      <span className="font-medium text-sm">{s.name}</span>
+                      <span className="text-gray-300 text-sm">›</span>
+                    </div>
+                  ))
+                )}
+              </div>
+              <button onClick={() => { setAddPicker(false); setAddTarget(null); }}
+                className="w-full py-3 rounded-xl border border-gray-200 text-gray-500 text-sm font-semibold">閉じる</button>
+            </>
+          ) : (
+            <>
+              <p className="text-gray-400 text-xs mb-5">出勤可能時間を入力してください</p>
+              <TimeInputs start={addStart} end={addEnd} onStart={setAddStart} onEnd={setAddEnd} />
+              <div className="flex gap-2 mt-6">
+                <button onClick={() => setAddStep('pick')}
+                  className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-500 text-sm font-semibold">戻る</button>
+                <button
+                  onClick={async () => {
+                    await saveStaffAvail(addTarget.id, addTarget.name, pickedDate, true, addStart, addEnd);
+                    setAddPicker(false);
+                    setAddTarget(null);
+                  }}
+                  className="flex-1 py-3 rounded-xl bg-blue-600 text-white text-sm font-semibold">追加</button>
+              </div>
+            </>
+          )}
+        </BottomSheet>
+      )}
+    </div>
+  );
+}
+
+// ── 共通コンポーネント ──────────────────────────────
+function BottomSheet({ title, onClose, children }) {
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-end z-50"
+      onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="bg-white w-full rounded-t-2xl p-6 max-h-[85vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-bold text-base">{title}</h2>
+          <button onClick={onClose} className="text-gray-400 text-2xl leading-none">×</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function TimeInputs({ start, end, onStart, onEnd }) {
+  return (
+    <div className="grid grid-cols-2 gap-4">
+      <div>
+        <label className="text-xs text-gray-500 mb-1 block">開始時間</label>
+        <input type="time" value={start} onChange={(e) => onStart(e.target.value)}
+          className="w-full border border-gray-200 rounded-xl px-3 py-3 text-center text-base" />
+      </div>
+      <div>
+        <label className="text-xs text-gray-500 mb-1 block">終了時間</label>
+        <input type="time" value={end} onChange={(e) => onEnd(e.target.value)}
+          className="w-full border border-gray-200 rounded-xl px-3 py-3 text-center text-base" />
+      </div>
     </div>
   );
 }

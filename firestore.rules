@@ -19,16 +19,31 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // 配置図（日付ごと）
+    // 配置図
     match /assignments/{date} {
       allow read: if isSignedIn();
       allow write: if isAdmin();
     }
 
-    // 出勤可能日（スタッフごと）
+    // 出勤可能日（管理者は全スタッフ分を読み書き可）
     match /availability/{userId} {
       allow read: if request.auth.uid == userId || isAdmin();
-      allow write: if request.auth.uid == userId;
+      allow write: if request.auth.uid == userId || isAdmin();
+    }
+
+    // 出勤退勤打刻
+    match /attendance/{recordId} {
+      allow read: if isSignedIn() && (
+        resource.data.userId == request.auth.uid || isAdmin()
+      );
+      allow create, update: if isSignedIn() &&
+        request.resource.data.userId == request.auth.uid;
+    }
+
+    // 店舗設定（GPS基準点）
+    match /settings/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
   }
 }
