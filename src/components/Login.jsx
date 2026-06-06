@@ -24,7 +24,7 @@ export default function Login() {
         await setDoc(doc(db, 'users', cred.user.uid), {
           name: name.trim(),
           email,
-          role: 'staff',
+          role: 'pending',
           createdAt: new Date().toISOString(),
         });
       }

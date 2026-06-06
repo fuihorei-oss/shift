@@ -7,42 +7,51 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
 
-    function isSignedIn() {
-      return request.auth != null;
+    // staff または admin のみアクティブユーザーとして扱う
+    function isApproved() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['staff', 'admin'];
     }
 
-    // ユーザー情報
     match /users/{userId} {
-      allow read: if isSignedIn();
+      allow read: if request.auth.uid == userId || isAdmin();
       allow create: if request.auth.uid == userId;
-      allow update: if request.auth.uid == userId || isAdmin();
+      allow update: if isAdmin() || (
+        request.auth.uid == userId &&
+        request.resource.data.role == resource.data.role
+      );
       allow delete: if isAdmin();
     }
 
-    // 配置図
-    match /assignments/{date} {
-      allow read: if isSignedIn();
+    match /submissions/{docId} {
+      allow read: if isApproved();
+      allow create, update: if (isApproved() &&
+        request.resource.data.staffId == request.auth.uid) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /adminOverrides/{yearMonth} {
+      allow read: if isApproved();
       allow write: if isAdmin();
     }
 
-    // 出勤可能日（管理者は全スタッフ分を読み書き可）
-    match /availability/{userId} {
-      allow read: if request.auth.uid == userId || isAdmin();
-      allow write: if request.auth.uid == userId || isAdmin();
-    }
-
-    // 出勤退勤打刻
     match /attendance/{recordId} {
-      allow read: if isSignedIn() && (
+      allow read: if isApproved();
+      allow create: if isApproved() &&
+        request.resource.data.userId == request.auth.uid;
+      allow update: if isApproved() && (
         resource.data.userId == request.auth.uid || isAdmin()
       );
-      allow create, update: if isSignedIn() &&
-        request.resource.data.userId == request.auth.uid;
     }
 
-    // 店舗設定（GPS基準点）
+    match /staffStats/{staffId} {
+      allow read: if request.auth.uid == staffId || isAdmin();
+      allow write: if isAdmin();
+    }
+
     match /settings/{docId} {
-      allow read: if isSignedIn();
+      allow read: if isApproved();
       allow write: if isAdmin();
     }
   }
