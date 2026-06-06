@@ -111,6 +111,7 @@ export default function App() {
   }
 
   const isAdmin = userData?.role === 'admin';
+  const [showUserMenu, setShowUserMenu] = useState(false);
 
   return (
     <AuthContext.Provider value={{ user, userData, isAdmin }}>
@@ -120,7 +121,12 @@ export default function App() {
             <h1 className="font-bold text-base tracking-wide">シフト管理</h1>
             <span className="text-xs text-gray-400">v{__APP_VERSION__}</span>
           </div>
-          <span className="text-sm text-gray-300 truncate max-w-[140px]">{userData?.name}</span>
+          <button
+            onClick={() => setShowUserMenu(true)}
+            className="flex items-center gap-1.5 active:opacity-70">
+            <span className="text-sm text-gray-300 truncate max-w-[120px]">{userData?.name}</span>
+            <span className="text-gray-500 text-xs">▼</span>
+          </button>
         </header>
 
         <main className="flex-1 overflow-hidden">
@@ -136,6 +142,35 @@ export default function App() {
           {isAdmin && <TabButton active={activeTab==='schedule'} onClick={()=>setActiveTab('schedule')} label="シフト表" icon="📊" />}
           {isAdmin && <TabButton active={activeTab==='admin'}    onClick={()=>setActiveTab('admin')}    label="管理"   icon="⚙️" />}
         </nav>
+
+        {showUserMenu && (
+          <div className="fixed inset-0 bg-black/50 flex items-end z-50" onClick={() => setShowUserMenu(false)}>
+            <div className="bg-white w-full rounded-t-2xl p-6" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center gap-3 mb-5 pb-5 border-b border-gray-100">
+                <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center text-gray-600 font-bold text-base flex-shrink-0">
+                  {userData?.name?.[0] ?? '?'}
+                </div>
+                <div className="min-w-0">
+                  <div className="font-bold text-sm truncate">{userData?.name}</div>
+                  <div className="text-xs text-gray-400 truncate">{user?.email}</div>
+                  <span className={`mt-0.5 inline-block text-[10px] px-2 py-0.5 rounded-full ${isAdmin ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-500'}`}>
+                    {isAdmin ? '管理者' : 'スタッフ'}
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={() => { setShowUserMenu(false); signOut(auth); }}
+                className="w-full py-3 rounded-xl border border-red-200 text-red-500 text-sm font-semibold active:bg-red-50">
+                サインアウト
+              </button>
+              <button
+                onClick={() => setShowUserMenu(false)}
+                className="mt-2 w-full py-3 rounded-xl border border-gray-200 text-gray-400 text-sm">
+                閉じる
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </AuthContext.Provider>
   );
