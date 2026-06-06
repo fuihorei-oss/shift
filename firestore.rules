@@ -54,5 +54,11 @@ service cloud.firestore {
       allow read: if isApproved();
       allow write: if isAdmin();
     }
+
+    match /notifications/{staffId} {
+      allow read: if request.auth.uid == staffId || isAdmin();
+      allow create, update: if isAdmin();
+      allow delete: if request.auth.uid == staffId || isAdmin();
+    }
   }
 }

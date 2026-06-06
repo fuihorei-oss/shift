@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, getDocs, doc, setDoc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, setDoc, getDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 
 function getAvailableMonths() {
@@ -33,6 +33,7 @@ export default function ScheduleGrid() {
   const [modalStartTime, setModalStartTime] = useState('18:00');
   const [modalEndTime,   setModalEndTime]   = useState('22:00');
   const [saving, setSaving] = useState(false);
+  const [notifying, setNotifying] = useState(false);
 
   useEffect(() => {
     getDocs(collection(db,'users')).then(snap =>
@@ -125,8 +126,31 @@ export default function ScheduleGrid() {
     setSaving(false);
   };
 
+  // 予定人数は「確定（●）」のみカウント
   const dayCount = (day) =>
-    staffList.filter(s => getCellStatus(s.id,day)==='available' || getCellStatus(s.id,day)==='confirmed').length;
+    staffList.filter(s => getCellStatus(s.id, day) === 'confirmed').length;
+
+  const unsubmitted = staffList.filter(s => !submissions[s.id]);
+
+  const notifyUnsubmitted = async () => {
+    if (unsubmitted.length === 0) return;
+    if (!window.confirm(`未提出の${unsubmitted.length}名に通知を送りますか？`)) return;
+    setNotifying(true);
+    const batch = writeBatch(db);
+    const [y, m] = ym.split('-');
+    const msg = `${y}年${parseInt(m)}月のシフトを提出してください`;
+    unsubmitted.forEach(s => {
+      batch.set(doc(db, 'notifications', s.id), {
+        staffId: s.id,
+        yearMonth: ym,
+        message: msg,
+        sentAt: new Date().toISOString(),
+      });
+    });
+    await batch.commit();
+    setNotifying(false);
+    alert(`${unsubmitted.length}名に通知しました`);
+  };
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -141,6 +165,19 @@ export default function ScheduleGrid() {
           ))}
         </div>
       </div>
+
+      {/* 未提出者通知バー */}
+      {unsubmitted.length > 0 && (
+        <div className="bg-red-50 border-b border-red-100 px-3 py-2 flex items-center justify-between flex-shrink-0">
+          <span className="text-xs text-red-600 font-medium">
+            未提出: {unsubmitted.map(s=>s.name).join('・')}
+          </span>
+          <button onClick={notifyUnsubmitted} disabled={notifying}
+            className="text-xs bg-red-500 text-white px-3 py-1.5 rounded-lg font-semibold flex-shrink-0 ml-2 disabled:opacity-50 active:opacity-70">
+            {notifying ? '送信中...' : '🔔 通知'}
+          </button>
+        </div>
+      )}
 
       {/* グリッド */}
       <div className="flex-1 overflow-auto">
@@ -163,9 +200,10 @@ export default function ScheduleGrid() {
           <tbody>
             {staffList.map(staff=>(
               <tr key={staff.id}>
-                <td className="sticky left-0 z-10 bg-white border border-gray-300 px-2 py-1 font-medium whitespace-nowrap">
+                <td className={`sticky left-0 z-10 border border-gray-300 px-2 py-1 font-medium whitespace-nowrap
+                  ${!submissions[staff.id] ? 'bg-red-50 text-red-600' : 'bg-white text-gray-700'}`}>
                   {staff.name}
-                  {!submissions[staff.id] && <span className="ml-1 text-[9px] text-gray-300">未提出</span>}
+                  {!submissions[staff.id] && <span className="ml-1 text-[9px]">未提出</span>}
                 </td>
                 {days.map(day=>{
                   const status = getCellStatus(staff.id, day);

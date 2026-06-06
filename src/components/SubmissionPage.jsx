@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../App';
 
@@ -41,6 +41,7 @@ export default function SubmissionPage() {
   const [daysOff, setDaysOff] = useState({});
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState('');
+  const [notification, setNotification] = useState(null);
 
   const today = new Date().toLocaleDateString('sv-SE');
   const d5  = getDeadline5(ym);   // 前月5日
@@ -51,6 +52,17 @@ export default function SubmissionPage() {
   // 5日まではweeklyDaysも変更可能（提出済みでも再提出できる）
   const canSubmit  = beforeD5;
   const canEditOff = submitted && beforeD15;
+
+  // 管理者からの通知を確認
+  useEffect(() => {
+    getDoc(doc(db, 'notifications', user.uid)).then(snap => {
+      if (snap.exists() && snap.data().yearMonth === ym) {
+        setNotification(snap.data());
+      } else {
+        setNotification(null);
+      }
+    });
+  }, [user.uid, ym]);
 
   useEffect(() => {
     getDoc(doc(db, 'submissions', `${user.uid}_${ym}`)).then(snap => {
@@ -71,6 +83,11 @@ export default function SubmissionPage() {
     const data = { staffId: user.uid, staffName: userData?.name ?? '', yearMonth: ym, weeklyDays, daysOff, submittedAt: new Date().toISOString() };
     await setDoc(doc(db, 'submissions', `${user.uid}_${ym}`), data);
     setSub(data);
+    // 通知があればクリア
+    if (notification) {
+      await deleteDoc(doc(db, 'notifications', user.uid));
+      setNotification(null);
+    }
     flash('提出しました！');
     setLoading(false);
   };
@@ -119,6 +136,16 @@ export default function SubmissionPage() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* 管理者からの通知 */}
+        {notification && (
+          <div className="bg-orange-50 border border-orange-300 rounded-xl px-4 py-3 flex items-start gap-2">
+            <span className="text-lg flex-shrink-0">🔔</span>
+            <div>
+              <div className="font-bold text-sm text-orange-700">管理者からのお知らせ</div>
+              <div className="text-sm text-orange-600 mt-0.5">{notification.message}</div>
+            </div>
+          </div>
+        )}
         {/* ステータス */}
         <div className={`rounded-xl px-4 py-2.5 text-sm font-medium ${badgeClass}`}>{badgeText}</div>
 

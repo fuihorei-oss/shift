@@ -199,6 +199,9 @@ function StatsTab() {
   const [memoText,   setMemoText]   = useState('');
   const [detailTarget, setDetailTarget] = useState(null);
   const [loading,    setLoading]    = useState(false);
+  const [incidentMemos,      setIncidentMemos]      = useState({}); // { staffId: { dateStr: memo } }
+  const [incidentMemoTarget, setIncidentMemoTarget] = useState(null); // { staffId, dateStr }
+  const [incidentMemoText,   setIncidentMemoText]   = useState('');
 
   useEffect(()=>{
     const load = async () => {
@@ -233,12 +236,15 @@ function StatsTab() {
 
       const mm={};
       const em={};
+      const im={};
       memoSnap.docs.forEach(d=>{
         mm[d.id]=d.data().memo??'';
         em[d.id]=d.data().excusedDates??{};
+        im[d.id]=d.data().incidentMemos??{};
       });
       setMemos(mm);
       setExcusedMap(em);
+      setIncidentMemos(im);
       setLoading(false);
     };
     load();
@@ -293,6 +299,21 @@ function StatsTab() {
     await setDoc(doc(db,'staffStats',memoTarget.id),{memo:memoText},{merge:true});
     setMemos(p=>({...p,[memoTarget.id]:memoText}));
     setMemoTarget(null);
+  };
+
+  const saveIncidentMemo = async () => {
+    if(!incidentMemoTarget) return;
+    const {staffId, dateStr} = incidentMemoTarget;
+    const curr = incidentMemos[staffId] ?? {};
+    const next = {...curr};
+    if (incidentMemoText.trim()) {
+      next[dateStr] = incidentMemoText.trim();
+    } else {
+      delete next[dateStr];
+    }
+    await setDoc(doc(db,'staffStats',staffId),{incidentMemos:next},{merge:true});
+    setIncidentMemos(p=>({...p,[staffId]:next}));
+    setIncidentMemoTarget(null);
   };
 
   const dates = getDatesInMonth(ym);
@@ -418,16 +439,28 @@ function StatsTab() {
                     ) : (
                       <div className="space-y-2">
                         {lateItems.map(({ds, issue})=>(
-                          <div key={ds} className="bg-orange-50 rounded-xl px-4 py-3 flex items-center justify-between">
-                            <div>
-                              <div className="font-semibold text-sm">{formatDate(ds)}</div>
-                              <div className="text-xs text-gray-500 mt-0.5">
-                                勤務時間 {issue.scheduledTime}{issue.endTime ? ` 〜 ${issue.endTime}` : ''}
+                          <div key={ds} className="bg-orange-50 rounded-xl px-4 py-3">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <div className="font-semibold text-sm">{formatDate(ds)}</div>
+                                <div className="text-xs text-gray-500 mt-0.5">
+                                  勤務時間 {issue.scheduledTime}{issue.endTime ? ` 〜 ${issue.endTime}` : ''}
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <div className="text-orange-600 font-bold text-sm">{issue.time} 打刻</div>
+                                <div className="text-orange-500 text-xs font-semibold">{issue.lateMinutes}分遅刻</div>
                               </div>
                             </div>
-                            <div className="text-right">
-                              <div className="text-orange-600 font-bold text-sm">{issue.time} 打刻</div>
-                              <div className="text-orange-500 text-xs font-semibold">{issue.lateMinutes}分遅刻</div>
+                            <div className="mt-2 flex items-center gap-2">
+                              {incidentMemos[detailTarget.id]?.[ds]
+                                ? <span className="text-xs text-gray-500 italic flex-1 truncate">📝 {incidentMemos[detailTarget.id][ds]}</span>
+                                : <span className="flex-1"/>}
+                              <button
+                                onClick={()=>{setIncidentMemoTarget({staffId:detailTarget.id,dateStr:ds});setIncidentMemoText(incidentMemos[detailTarget.id]?.[ds]??'');}}
+                                className="text-xs border border-gray-200 px-2 py-1 rounded-lg text-gray-500 flex-shrink-0 active:bg-gray-50">
+                                {incidentMemos[detailTarget.id]?.[ds]?'メモ編集':'メモ追加'}
+                              </button>
                             </div>
                           </div>
                         ))}
@@ -477,6 +510,16 @@ function StatsTab() {
                                   {isExcused ? '公休（承認済）' : '欠勤'}
                                 </button>
                               </div>
+                              <div className="mt-2 flex items-center gap-2">
+                                {incidentMemos[detailTarget.id]?.[ds]
+                                  ? <span className="text-xs text-gray-500 italic flex-1 truncate">📝 {incidentMemos[detailTarget.id][ds]}</span>
+                                  : <span className="flex-1"/>}
+                                <button
+                                  onClick={()=>{setIncidentMemoTarget({staffId:detailTarget.id,dateStr:ds});setIncidentMemoText(incidentMemos[detailTarget.id]?.[ds]??'');}}
+                                  className="text-xs border border-gray-200 px-2 py-1 rounded-lg text-gray-500 flex-shrink-0 active:bg-gray-50">
+                                  {incidentMemos[detailTarget.id]?.[ds]?'メモ編集':'メモ追加'}
+                                </button>
+                              </div>
                             </div>
                           );
                         })}
@@ -494,6 +537,25 @@ function StatsTab() {
               className="w-full py-3 rounded-xl border border-gray-200 text-gray-500 text-sm">
               閉じる
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* インシデントメモ */}
+      {incidentMemoTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-end z-[60]" onClick={e=>e.target===e.currentTarget&&setIncidentMemoTarget(null)}>
+          <div className="bg-white w-full rounded-t-2xl p-6">
+            <h2 className="font-bold text-base mb-0.5">
+              {staffList.find(s=>s.id===incidentMemoTarget.staffId)?.name}
+            </h2>
+            <p className="text-xs text-gray-400 mb-4">{incidentMemoTarget.dateStr} のメモ</p>
+            <textarea value={incidentMemoText} onChange={e=>setIncidentMemoText(e.target.value)} rows={4}
+              placeholder="例: 電車遅延、事前連絡あり"
+              className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none mb-4"/>
+            <div className="flex gap-2">
+              <button onClick={()=>setIncidentMemoTarget(null)} className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-500 text-sm font-semibold">キャンセル</button>
+              <button onClick={saveIncidentMemo} className="flex-1 py-3 rounded-xl bg-blue-600 text-white text-sm font-semibold">保存</button>
+            </div>
           </div>
         </div>
       )}
