@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, getDocs, doc, setDoc, getDoc, writeBatch } from 'firebase/firestore';
+import { collection, getDocs, doc, setDoc, getDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 
 function getAvailableMonths() {
@@ -34,6 +34,7 @@ export default function ScheduleGrid() {
   const [modalEndTime,   setModalEndTime]   = useState('22:00');
   const [saving, setSaving] = useState(false);
   const [notifying, setNotifying] = useState(false);
+  const [sentNotifications, setSentNotifications] = useState({}); // { staffId: notifData }
 
   useEffect(() => {
     getDocs(collection(db,'users')).then(snap =>
@@ -43,10 +44,11 @@ export default function ScheduleGrid() {
 
   useEffect(() => {
     const load = async () => {
-      const [subSnap, ovSnap, attSnap] = await Promise.all([
+      const [subSnap, ovSnap, attSnap, notifSnap] = await Promise.all([
         getDocs(collection(db,'submissions')),
         getDoc(doc(db,'adminOverrides',ym)),
         getDocs(collection(db,'attendance')),
+        getDocs(collection(db,'notifications')),
       ]);
       const subs = {};
       subSnap.docs.forEach(d => { if(d.data().yearMonth===ym) subs[d.data().staffId]=d.data(); });
@@ -56,6 +58,12 @@ export default function ScheduleGrid() {
       setOverrides(ovData.overrides ?? {});
       setShiftStartTimes(ovData.shiftStartTimes ?? {});
       setShiftEndTimes(ovData.shiftEndTimes ?? {});
+
+      const notifs = {};
+      notifSnap.docs.forEach(d => {
+        if (d.data().yearMonth === ym) notifs[d.id] = d.data();
+      });
+      setSentNotifications(notifs);
 
       const cmap = {};
       attSnap.docs.forEach(d => {
@@ -131,25 +139,31 @@ export default function ScheduleGrid() {
     staffList.filter(s => getCellStatus(s.id, day) === 'confirmed').length;
 
   const unsubmitted = staffList.filter(s => !submissions[s.id]);
+  const notNotified = unsubmitted.filter(s => !sentNotifications[s.id]);
 
   const notifyUnsubmitted = async () => {
-    if (unsubmitted.length === 0) return;
-    if (!window.confirm(`未提出の${unsubmitted.length}名に通知を送りますか？`)) return;
+    if (notNotified.length === 0) return;
+    if (!window.confirm(`未通知の${notNotified.length}名に通知を送りますか？`)) return;
     setNotifying(true);
     const batch = writeBatch(db);
     const [y, m] = ym.split('-');
     const msg = `${y}年${parseInt(m)}月のシフトを提出してください`;
-    unsubmitted.forEach(s => {
+    const now = new Date().toISOString();
+    notNotified.forEach(s => {
       batch.set(doc(db, 'notifications', s.id), {
-        staffId: s.id,
-        yearMonth: ym,
-        message: msg,
-        sentAt: new Date().toISOString(),
+        staffId: s.id, yearMonth: ym, message: msg, sentAt: now,
       });
     });
     await batch.commit();
+    const newNotifs = {...sentNotifications};
+    notNotified.forEach(s => { newNotifs[s.id] = { staffId: s.id, yearMonth: ym, message: msg, sentAt: now }; });
+    setSentNotifications(newNotifs);
     setNotifying(false);
-    alert(`${unsubmitted.length}名に通知しました`);
+  };
+
+  const deleteNotification = async (staffId) => {
+    await deleteDoc(doc(db, 'notifications', staffId));
+    setSentNotifications(p => { const n = {...p}; delete n[staffId]; return n; });
   };
 
   return (
@@ -166,16 +180,38 @@ export default function ScheduleGrid() {
         </div>
       </div>
 
-      {/* 未提出者通知バー */}
-      {unsubmitted.length > 0 && (
-        <div className="bg-red-50 border-b border-red-100 px-3 py-2 flex items-center justify-between flex-shrink-0">
-          <span className="text-xs text-red-600 font-medium">
-            未提出: {unsubmitted.map(s=>s.name).join('・')}
-          </span>
-          <button onClick={notifyUnsubmitted} disabled={notifying}
-            className="text-xs bg-red-500 text-white px-3 py-1.5 rounded-lg font-semibold flex-shrink-0 ml-2 disabled:opacity-50 active:opacity-70">
-            {notifying ? '送信中...' : '🔔 通知'}
-          </button>
+      {/* 通知管理バー */}
+      {(notNotified.length > 0 || Object.keys(sentNotifications).length > 0) && (
+        <div className="bg-red-50 border-b border-red-100 px-3 py-2 flex-shrink-0 space-y-1.5">
+          {/* 未通知の未提出者 */}
+          {notNotified.length > 0 && (
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-red-600 font-medium">
+                未提出（未通知）: {notNotified.map(s=>s.name).join('・')}
+              </span>
+              <button onClick={notifyUnsubmitted} disabled={notifying}
+                className="text-xs bg-red-500 text-white px-3 py-1.5 rounded-lg font-semibold flex-shrink-0 ml-2 disabled:opacity-50 active:opacity-70">
+                {notifying ? '送信中...' : '🔔 通知'}
+              </button>
+            </div>
+          )}
+          {/* 通知済みバッジ（×で削除） */}
+          {Object.keys(sentNotifications).length > 0 && (
+            <div className="flex flex-wrap gap-1.5 items-center">
+              <span className="text-[10px] text-orange-500 font-semibold">通知済み:</span>
+              {Object.entries(sentNotifications).map(([sid, n]) => {
+                const s = staffList.find(x=>x.id===sid);
+                if (!s) return null;
+                return (
+                  <span key={sid} className="flex items-center gap-1 bg-orange-100 text-orange-700 rounded-full px-2 py-0.5 text-[11px]">
+                    🔔 {s.name}
+                    <button onClick={()=>deleteNotification(sid)}
+                      className="text-orange-400 font-bold text-xs leading-none active:text-orange-700 ml-0.5">×</button>
+                  </span>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -204,6 +240,7 @@ export default function ScheduleGrid() {
                   ${!submissions[staff.id] ? 'bg-red-50 text-red-600' : 'bg-white text-gray-700'}`}>
                   {staff.name}
                   {!submissions[staff.id] && <span className="ml-1 text-[9px]">未提出</span>}
+                  {sentNotifications[staff.id] && <span className="ml-0.5 text-[10px]">🔔</span>}
                 </td>
                 {days.map(day=>{
                   const status = getCellStatus(staff.id, day);

@@ -1,6 +1,7 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
+import { getMessaging, isSupported } from 'firebase/messaging';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -14,6 +15,9 @@ const firebaseConfig = {
 export const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
 export const auth = getAuth(app);
+
+// messaging は Safari など非対応ブラウザがあるため isSupported で確認してから初期化
+export const messagingPromise = isSupported().then(ok => ok ? getMessaging(app) : null);
 
 // スタッフ追加時に現在のセッションを維持するためのサブアプリ
 export function getSecondaryAuth() {

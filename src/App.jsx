@@ -1,7 +1,8 @@
 import { useState, useEffect, createContext, useContext } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { doc, getDoc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { getToken } from 'firebase/messaging';
+import { auth, db, messagingPromise } from './firebase';
 import Login from './components/Login';
 import SubmissionPage from './components/SubmissionPage';
 import AttendancePage from './components/AttendancePage';
@@ -70,6 +71,32 @@ export default function App() {
       if (unsubSnapshot) unsubSnapshot();
     };
   }, []);
+
+  // 承認済みユーザーのプッシュ通知セットアップ
+  useEffect(() => {
+    if (!user || !userData || !['staff', 'admin'].includes(userData.role)) return;
+    const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY;
+    if (!vapidKey) return;
+
+    (async () => {
+      if (!('Notification' in window) || !('serviceWorker' in navigator)) return;
+      try {
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') return;
+
+        const messaging = await messagingPromise;
+        if (!messaging) return;
+
+        const sw = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+        const token = await getToken(messaging, { vapidKey, serviceWorkerRegistration: sw });
+        if (token) {
+          await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
+        }
+      } catch (e) {
+        console.warn('Push setup:', e.message);
+      }
+    })();
+  }, [user?.uid, userData?.role]); // eslint-disable-line
 
   if (loading) return (
     <div className="flex items-center justify-center h-full bg-gray-50">
