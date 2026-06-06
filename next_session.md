@@ -1,87 +1,145 @@
-# 2026-06-06 作業まとめ
+# 2026-06-07 作業まとめ
 
 ## 本番 URL
 https://shift-97e6f.web.app
 
----
-
-## 1. 遅刻・欠勤評価の改善（AdminDashboard.jsx）
-
-### 変更内容
-- 評価対象を「確定シフト（●）のみ」に絞った（以前は「出勤可」も評価対象だった）
-- 遅刻は「何分遅刻か」を表示するよう改善（例: `28分遅刻（18:00→18:28）`）
-- **名前をタップ**すると詳細モーダルが開く
-  - 遅刻：日付・予定時刻・打刻時刻・遅刻分数
-  - 欠勤：日付と「欠勤 ↔ 公休（承認済）」切り替えボタン
-- 欠勤を公休に変更すると欠勤カウントから除外。`staffStats/{staffId}.excusedDates` に保存
+## 現在のバージョン
+v1.2.0（package.json）
 
 ---
 
-## 2. シフト確定時の勤務時間設定（ScheduleGrid.jsx）
+## 1. 削除済みアカウントの改善
 
-### 変更内容
-- シフトグリッドのセルをタップして「出勤確定（●）」にする際、**開始時刻・終了時刻**を入力できるようにした
-- 確定済みセルにはグリッド内に時刻を小さく表示（例: `●\n18:00\n〜22:00`）
-- 時刻は `adminOverrides/{ym}` ドキュメントの `shiftStartTimes` / `shiftEndTimes` マップに保存
-- **店舗設定の「標準出勤時刻」を廃止**。遅刻判定はシフトごとの設定時刻のみを使用（未設定の確定シフトは遅刻評価なし・欠勤は評価あり）
+### 1-1. エラーメッセージ表示（App.jsx / Login.jsx）
+- 削除（suspended）されたユーザーがログインしようとすると
+  「このアカウントは削除されています。管理者にお問い合わせください。」を表示
+- 既にログイン中に削除された場合も同メッセージ＋即サインアウト
 
-### Firestore データ構造（adminOverrides/{ym}）
+### 1-2. 削除 → 再登録フロー（AdminDashboard.jsx / App.jsx / Login.jsx）
+- 削除処理を `role: 'suspended'` 変更から **Firestore ドキュメント完全削除** に変更
+- 削除後に同じメール・パスワードでログイン or 新規登録 → 承認待ち状態で復帰
+- 新規登録時に `updateProfile` で Firebase Auth に名前を保存 → 再ログイン時も名前が引き継がれる
+
+---
+
+## 2. バージョン表示修正（App.jsx）
+- `text-[10px] text-gray-500` → `text-xs text-gray-400` に変更（視認性改善）
+
+---
+
+## 3. スタッフのサインアウト機能（App.jsx）
+- ヘッダー右上の名前（▼）をタップ → ボトムシートが開く
+  - 名前・メールアドレス・権限（スタッフ／管理者）を表示
+  - 「サインアウト」ボタン
+- スタッフ・管理者どちらからも利用可能
+- **バグ修正**: `useState(showUserMenu)` を early return 後に置いていた → コンポーネント先頭に移動（React error #310 対応）
+
+---
+
+## 4. シフト表の改善（ScheduleGrid.jsx）
+
+### 4-1. 未提出者の赤ハイライト
+- 未提出スタッフの名前セルが赤背景・赤文字になる
+
+### 4-2. 予定人数を確定（●）のみにカウント
+- 以前は「○出勤可」も含めていたが、確定シフトだけを表示
+
+### 4-3. 通知管理バー
+- 未提出（未通知）の名前と「🔔 通知」ボタンを表示
+- 通知済みはオレンジのバッジ（🔔 名前 ×）で表示
+- × ボタンで通知を個別削除
+- 名前セルに 🔔 アイコンで通知済みを識別
+
+---
+
+## 5. 遅刻・欠勤インシデントメモ（AdminDashboard.jsx）
+- 実績タブ → 名前タップ → 詳細モーダルの各遅刻・欠勤行に「メモ追加」ボタン
+- 入力したメモは 📝 で行内に表示、編集もできる
+- `staffStats/{staffId}.incidentMemos = { dateStr: "memo text" }` に保存
+
+---
+
+## 6. スタッフへの通知機能（SubmissionPage.jsx）
+- 管理者が「🔔 通知」を押す → Firestore `notifications/{staffId}` に書き込み
+- スタッフがアプリを開くと「申請」タブにオレンジのバナーが表示
+- シフト提出完了時に通知を自動クリア
+
+---
+
+## 7. プッシュ通知（v1.2.0）
+
+### 仕組み
+1. アプリ初回ログイン時に通知権限を要求
+2. FCM トークンを `users/{uid}.fcmToken` に保存
+3. 管理者が「🔔 通知」→ `notifications/{staffId}` に書き込み
+4. Cloud Functions がトリガー → FCM 経由でデバイスにプッシュ送信
+
+### 追加ファイル
+| ファイル | 役割 |
+|---------|------|
+| `public/firebase-messaging-sw.js` | バックグラウンド通知受信 Service Worker |
+| `functions/index.js` | Cloud Functions（Firestore トリガー → FCM 送信） |
+| `functions/package.json` | Functions 依存関係 |
+
+### ⚠️ プッシュ通知を有効にするには追加手順が必要
+
+**Step 1 — VAPID キーを取得**
+1. Firebase Console → プロジェクト設定 → Cloud Messaging
+2. ウェブプッシュ証明書 → キーペアを生成
+3. `.env` の `VITE_FIREBASE_VAPID_KEY=` に貼り付け
+
+**Step 2 — Blaze プランに切り替え**（無料枠あり、実質 ¥0/月）
+- Firebase Console → 左下「Spark」→「アップグレード」
+
+**Step 3 — Functions をデプロイ**
+```bash
+firebase deploy --only functions --project shift-97e6f
 ```
+
+**Step 4 — フロントをリビルド＆デプロイ**
+```bash
+npm run build && firebase deploy --only hosting --project shift-97e6f
+```
+
+> Cloud Functions なしでも「アプリ内通知（バナー）」は動作する。
+> バックグラウンドへのプッシュ通知だけ Cloud Functions が必要。
+
+---
+
+## Firestore データ構造（追加分）
+
+```
+notifications/{staffId}
 {
+  staffId: "xxx",
   yearMonth: "2026-06",
-  overrides: { "staffId_dateStr": "confirmed" | "available" | ... },
-  shiftStartTimes: { "staffId_dateStr": "18:00" },
-  shiftEndTimes:   { "staffId_dateStr": "22:00" }
+  message: "2026年6月のシフトを提出してください",
+  sentAt: ISO string
+}
+
+staffStats/{staffId}
+{
+  memo: "スタッフ全体メモ",
+  excusedDates: { "2026-06-15": true },
+  incidentMemos: { "2026-06-15": "電車遅延による遅刻" }
+}
+
+users/{uid}
+{
+  name, email, role,
+  fcmToken: "FCM デバイストークン（プッシュ通知用）"
 }
 ```
 
 ---
 
-## 3. セキュリティ修正
-
-### 3-1. firestore.rules
-
-| 修正内容 | 詳細 |
-|----------|------|
-| role の自己変更禁止 | スタッフが自分の `role` を `admin` に書き換える権限昇格を防止 |
-| メールアドレス保護 | `users` の read を「自分自身か管理者のみ」に制限 |
-| `isApproved()` 厳格化 | `role in ['staff', 'admin']` のみ許可（pending・suspended を完全ブロック） |
-
-### 3-2. 承認フロー（Login.jsx / App.jsx / AdminDashboard.jsx）
-
-- 新規登録 → `role: 'pending'` で作成 → 「承認待ち」画面を表示
-- 管理者が「スタッフ管理」タブで承認（→ `role: 'staff'` に変更）
-- 承認された瞬間にスタッフのアプリが自動で切り替わる（`onSnapshot` による即時反映）
-- 管理者が直接追加したアカウントは引き続き即時有効
-
-### 3-3. 削除→即ログイン不可（App.jsx / AdminDashboard.jsx）
-
-- 「削除」ボタンは物理削除ではなく `role: 'suspended'` に変更
-- `onSnapshot` でリアルタイム監視 → suspended になった瞬間に強制サインアウト
-- 再ログイン時も `role: 'suspended'` を検出して即サインアウト → ログイン不可
-
-### 3-4. 削除済みアカウントの自動復活防止（App.jsx）
-
-- **問題**: コンソールからドキュメントを手動削除すると、スタッフがアプリを開いた際に新しいドキュメントが自動生成されて「復活」していた
-- **修正**: アカウント作成から30秒以降でドキュメントが存在しない場合は「削除済み」と判断して即サインアウト（新規登録の30秒以内のみドキュメントを新規作成）
-- **注意**: コンソールから手動削除する場合は Firebase Authentication からもアカウントを削除することを推奨。アプリの「削除」ボタン（suspended 処理）を使うのが確実
-
----
-
-## 4. ヘッダーにバージョン表示（vite.config.js / App.jsx）
-
-- `vite.config.js` で `__APP_VERSION__` を `package.json` の `version` から定義
-- ヘッダーに `シフト管理  v1.0.0` と表示
-- バージョンを上げるときは `package.json` の `"version"` を変更してビルド・デプロイするだけ
-
----
-
 ## 残課題・既知の制限
 
-- **GPS 偽装**: 打刻の位置確認はブラウザ側の処理のみ。開発者ツールで偽装可能（小規模店舗なら許容範囲）
-- **Firebase App Check 未設定**: Firebase Console の「App Check を構成する」通知が出ている。設定すると不正なアクセスをさらに防止できる
-- **Firebase Auth アカウントの残存**: アプリの「削除」ボタンは `suspended` にするだけで Firebase Auth アカウントは残る。完全削除には Cloud Functions（Admin SDK）が必要
-- **バンドルサイズ警告**: ビルド時に `631 kB` の警告が出るが動作に影響なし（必要に応じて dynamic import で分割可能）
+- **GPS 偽装**: ブラウザ側のみの検証。開発者ツールで偽装可能（小規模店舗なら許容範囲）
+- **Firebase App Check 未設定**: 設定すると不正アクセスをさらに防止できる
+- **Firebase Auth アカウント残存**: アプリの「削除」は Firestore ドキュメントを削除するが Firebase Auth アカウントは残る。完全削除には Cloud Functions（Admin SDK）が必要
+- **バンドルサイズ警告**: ビルド時に 685 kB の警告（動作に影響なし）
+- **プッシュ通知**: VAPID キー設定・Blaze プランへの切り替えが未実施の場合はアプリ内通知のみ
 
 ---
 
@@ -89,11 +147,13 @@ https://shift-97e6f.web.app
 
 | ファイル | 役割 |
 |---------|------|
-| `src/App.jsx` | 認証・ルーティング・承認待ち画面・onSnapshot 監視 |
-| `src/components/Login.jsx` | ログイン・新規登録（pending で登録） |
-| `src/components/AdminDashboard.jsx` | スタッフ管理・実績・店舗設定 |
-| `src/components/ScheduleGrid.jsx` | シフトグリッド・確定時刻設定 |
+| `src/App.jsx` | 認証・ルーティング・プッシュ通知セットアップ |
+| `src/firebase.js` | Firebase 初期化（messaging 含む） |
+| `src/components/Login.jsx` | ログイン・新規登録・再登録フロー |
+| `src/components/AdminDashboard.jsx` | スタッフ管理・実績・インシデントメモ |
+| `src/components/ScheduleGrid.jsx` | シフトグリッド・通知管理 |
 | `src/components/AttendancePage.jsx` | 打刻・管理者退勤操作 |
-| `src/components/SubmissionPage.jsx` | シフト申請 |
+| `src/components/SubmissionPage.jsx` | シフト申請・通知バナー |
+| `public/firebase-messaging-sw.js` | FCM バックグラウンド通知 SW |
+| `functions/index.js` | Cloud Functions（プッシュ送信） |
 | `firestore.rules` | Firestore セキュリティルール |
-| `vite.config.js` | ビルド設定・バージョン定数 |
