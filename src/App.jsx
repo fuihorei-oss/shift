@@ -17,6 +17,7 @@ export default function App() {
   const [loading, setLoading]   = useState(true);
   const [activeTab, setActiveTab] = useState('submission');
   const [suspendedError, setSuspendedError] = useState('');
+  const [showUserMenu, setShowUserMenu] = useState(false);
 
   useEffect(() => {
     let unsubSnapshot = null;
@@ -111,7 +112,6 @@ export default function App() {
   }
 
   const isAdmin = userData?.role === 'admin';
-  const [showUserMenu, setShowUserMenu] = useState(false);
 
   return (
     <AuthContext.Provider value={{ user, userData, isAdmin }}>
