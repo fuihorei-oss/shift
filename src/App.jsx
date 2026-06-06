@@ -16,6 +16,7 @@ export default function App() {
   const [userData, setUserData] = useState(null);
   const [loading, setLoading]   = useState(true);
   const [activeTab, setActiveTab] = useState('submission');
+  const [suspendedError, setSuspendedError] = useState('');
 
   useEffect(() => {
     let unsubSnapshot = null;
@@ -32,9 +33,11 @@ export default function App() {
         const snap = await getDoc(ref);
         if (snap.exists()) {
           if (snap.data().role === 'suspended') {
+            setSuspendedError('このアカウントは削除されています。管理者にお問い合わせください。');
             signOut(auth);
             return;
           }
+          setSuspendedError('');
           setUserData(snap.data());
         } else {
           // アカウント作成から30秒以内 → 新規登録の初回ロード（ドキュメントを作成）
@@ -43,8 +46,10 @@ export default function App() {
           if (accountAgeMs < 30000) {
             const d = { name: fu.displayName || fu.email.split('@')[0], email: fu.email, role: 'pending', createdAt: new Date().toISOString() };
             await setDoc(ref, d);
+            setSuspendedError('');
             setUserData(d);
           } else {
+            setSuspendedError('このアカウントは削除されています。管理者にお問い合わせください。');
             signOut(auth);
             return;
           }
@@ -54,6 +59,7 @@ export default function App() {
         // リアルタイム監視：停止・削除されたら即サインアウト、ロール変更も即反映
         unsubSnapshot = onSnapshot(ref, (snap) => {
           if (!snap.exists() || snap.data().role === 'suspended') {
+            setSuspendedError('このアカウントは削除されています。管理者にお問い合わせください。');
             signOut(auth);
           } else {
             setUserData(snap.data());
@@ -77,7 +83,7 @@ export default function App() {
     </div>
   );
 
-  if (!user) return <Login />;
+  if (!user) return <Login suspendedError={suspendedError} />;
 
   // 承認待ちユーザーは専用画面を表示
   if (userData?.role === 'pending') {
@@ -112,7 +118,7 @@ export default function App() {
         <header className="bg-gray-900 text-white px-4 py-3 flex items-center justify-between flex-shrink-0">
           <div className="flex items-baseline gap-2">
             <h1 className="font-bold text-base tracking-wide">シフト管理</h1>
-            <span className="text-[10px] text-gray-500">v{__APP_VERSION__}</span>
+            <span className="text-xs text-gray-400">v{__APP_VERSION__}</span>
           </div>
           <span className="text-sm text-gray-300 truncate max-w-[140px]">{userData?.name}</span>
         </header>

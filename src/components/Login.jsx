@@ -3,7 +3,7 @@ import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'fire
 import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 
-export default function Login() {
+export default function Login({ suspendedError = '' }) {
   const [mode, setMode] = useState('login');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -46,6 +46,12 @@ export default function Login() {
     <div className="flex flex-col items-center justify-center h-full bg-gray-50 p-6">
       <div className="w-full max-w-sm">
         <h1 className="text-2xl font-bold text-center text-gray-900 mb-8">シフト管理</h1>
+
+        {suspendedError && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm text-center leading-relaxed">
+            {suspendedError}
+          </div>
+        )}
 
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
           <div className="flex mb-6 bg-gray-100 rounded-xl p-1 gap-1">
