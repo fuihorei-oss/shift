@@ -41,19 +41,12 @@ export default function App() {
           setSuspendedError('');
           setUserData(snap.data());
         } else {
-          // アカウント作成から30秒以内 → 新規登録の初回ロード（ドキュメントを作成）
-          // それ以降でドキュメントが存在しない → 削除済みアカウント → 即サインアウト
-          const accountAgeMs = Date.now() - new Date(fu.metadata.creationTime).getTime();
-          if (accountAgeMs < 30000) {
-            const d = { name: fu.displayName || fu.email.split('@')[0], email: fu.email, role: 'pending', createdAt: new Date().toISOString() };
-            await setDoc(ref, d);
-            setSuspendedError('');
-            setUserData(d);
-          } else {
-            setSuspendedError('このアカウントは削除されています。管理者にお問い合わせください。');
-            signOut(auth);
-            return;
-          }
+          // ドキュメントが存在しない: 新規登録 or 削除後の再ログイン
+          // どちらも pending として登録し管理者の承認を待つ
+          const d = { name: fu.displayName || fu.email.split('@')[0], email: fu.email, role: 'pending', createdAt: new Date().toISOString() };
+          await setDoc(ref, d);
+          setSuspendedError('');
+          setUserData(d);
         }
         setLoading(false);
 

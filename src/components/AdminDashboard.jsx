@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, getDoc, writeBatch } from 'firebase/firestore';
 import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { db, auth, getSecondaryAuth } from '../firebase';
 import { useAuth } from '../App';
@@ -52,14 +52,14 @@ function StaffTab() {
       await signOut(sa);
       setModal(false); setForm({name:'',email:'',password:'',role:'staff'}); await load();
     } catch(e){
-      const m={'auth/email-already-in-use':'このメールは使用済みです','auth/weak-password':'6文字以上にしてください'};
+      const m={'auth/email-already-in-use':'このメールは既に使用されています（削除済みアカウントの場合はスタッフ本人がログインして再登録できます）','auth/weak-password':'6文字以上にしてください'};
       setError(m[e.code]??e.message);
     }
     setLoading(false);
   };
 
   const approve  = (id) => updateDoc(doc(db,'users',id),{role:'staff'}).then(load);
-  const suspend  = (id) => updateDoc(doc(db,'users',id),{role:'suspended'}).then(load);
+  const remove   = (id) => deleteDoc(doc(db,'users',id)).then(load);
 
   const pending  = list.filter(s=>s.role==='pending');
   const approved = list.filter(s=>s.role!=='pending' && s.role!=='suspended');
@@ -91,7 +91,7 @@ function StaffTab() {
                     className="text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg font-semibold whitespace-nowrap">
                     承認する
                   </button>
-                  <button onClick={()=>window.confirm('削除しますか？')&&suspend(s.id)}
+                  <button onClick={()=>window.confirm('削除しますか？')&&remove(s.id)}
                     className="text-xs border border-red-200 px-2 py-1 rounded-lg text-red-500 whitespace-nowrap">削除</button>
                 </div>
               </div>
@@ -117,7 +117,7 @@ function StaffTab() {
                   className="text-xs border border-gray-200 px-2 py-1 rounded-lg text-gray-600 whitespace-nowrap">
                   {s.role==='admin'?'スタッフに変更':'管理者に変更'}
                 </button>
-                <button onClick={()=>window.confirm('削除しますか？')&&suspend(s.id)}
+                <button onClick={()=>window.confirm('削除しますか？')&&remove(s.id)}
                   className="text-xs border border-red-200 px-2 py-1 rounded-lg text-red-500 whitespace-nowrap">削除</button>
               </div>
             )}

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 
@@ -21,6 +21,8 @@ export default function Login({ suspendedError = '' }) {
         await signInWithEmailAndPassword(auth, email, password);
       } else {
         const cred = await createUserWithEmailAndPassword(auth, email, password);
+        // displayName を保存しておくことで、削除後に再ログインしたとき名前を復元できる
+        await updateProfile(cred.user, { displayName: name.trim() });
         await setDoc(doc(db, 'users', cred.user.uid), {
           name: name.trim(),
           email,
@@ -29,15 +31,24 @@ export default function Login({ suspendedError = '' }) {
         });
       }
     } catch (err) {
-      const msgs = {
-        'auth/user-not-found': 'メールアドレスが見つかりません',
-        'auth/wrong-password': 'パスワードが間違っています',
-        'auth/invalid-credential': 'メールアドレスまたはパスワードが間違っています',
-        'auth/email-already-in-use': 'このメールアドレスは既に登録されています',
-        'auth/weak-password': 'パスワードは6文字以上にしてください',
-        'auth/invalid-email': 'メールアドレスの形式が正しくありません',
-      };
-      setError(msgs[err.code] || 'エラーが発生しました');
+      if (err.code === 'auth/email-already-in-use') {
+        // 削除済みアカウントの再登録: 同じ認証情報でサインインを試みる
+        try {
+          await signInWithEmailAndPassword(auth, email, password);
+          // 成功 → App.jsx が pending ドキュメントを作成して承認待ち画面を表示
+        } catch {
+          setError('このメールアドレスは既に別のパスワードで登録されています。');
+        }
+      } else {
+        const msgs = {
+          'auth/user-not-found': 'メールアドレスが見つかりません',
+          'auth/wrong-password': 'パスワードが間違っています',
+          'auth/invalid-credential': 'メールアドレスまたはパスワードが間違っています',
+          'auth/weak-password': 'パスワードは6文字以上にしてください',
+          'auth/invalid-email': 'メールアドレスの形式が正しくありません',
+        };
+        setError(msgs[err.code] || 'エラーが発生しました');
+      }
     }
     setLoading(false);
   };
