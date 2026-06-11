@@ -16,6 +16,14 @@ function getAvailableMonths() {
   return result;
 }
 
+// 提出開始日 = 対象月の「前月1日」
+function getDeadline1(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  const pm = m === 1 ? 12 : m - 1;
+  const py = m === 1 ? y - 1 : y;
+  return `${py}-${String(pm).padStart(2, '0')}-01`;
+}
+
 // 締め切り = 対象月の「前月5日」
 function getDeadline5(ym) {
   const [y, m] = ym.split('-').map(Number);
@@ -45,13 +53,15 @@ export default function SubmissionPage() {
   const [notification, setNotification] = useState(null);
 
   const today = new Date().toLocaleDateString('sv-SE');
-  const d5  = getDeadline5(ym);   // 前月5日
-  const d15 = getDeadline15(ym);  // 前月15日
+  const d1  = getDeadline1(ym);   // 前月1日（提出開始日）
+  const d5  = getDeadline5(ym);   // 前月5日（提出締め切り）
+  const d15 = getDeadline15(ym);  // 前月15日（希望休締め切り）
+  const afterD1   = today >= d1;
   const beforeD5  = today <= d5;
   const beforeD15 = today <= d15;
   const submitted  = !!sub?.submittedAt;
-  // 5日まではweeklyDaysも変更可能（提出済みでも再提出できる）
-  const canSubmit  = beforeD5;
+  // 提出可能期間は前月1日〜5日のみ
+  const canSubmit  = afterD1 && beforeD5;
   const canEditOff = submitted && beforeD15;
 
   // 管理者からの通知を確認
@@ -112,8 +122,9 @@ export default function SubmissionPage() {
     if (!beforeD5 && !beforeD15) return ['確定済み（変更不可）', 'bg-gray-100 text-gray-500'];
     if (!beforeD5 && submitted)  return [`休み希望を変更できます（〜${d15}）`, 'bg-orange-50 text-orange-600'];
     if (!beforeD5)               return [`提出期限が過ぎています（${d5}まで）`, 'bg-red-50 text-red-600'];
+    if (!afterD1)                return [`提出受付前（${d1} 〜 ${d5}）`, 'bg-gray-50 text-gray-500'];
     if (submitted)  return [`提出済み・変更可能（〜${d5}）`, 'bg-blue-50 text-blue-600'];
-    return [`提出期限：${d5}`, 'bg-green-50 text-green-700'];
+    return [`提出期間：${d1} 〜 ${d5}`, 'bg-green-50 text-green-700'];
   })();
 
   return (
@@ -122,14 +133,17 @@ export default function SubmissionPage() {
       <div className="bg-white border-b border-gray-100 flex-shrink-0 overflow-x-auto">
         <div className="flex min-w-max">
           {months.map(m => {
-            const dl = getDeadline5(m);
-            const passed = new Date().toLocaleDateString('sv-SE') > dl;
+            const d1m = getDeadline1(m);
+            const d5m = getDeadline5(m);
+            const todayStr = new Date().toLocaleDateString('sv-SE');
+            const passed = todayStr > d5m;
+            const notYet = todayStr < d1m;
             return (
               <button key={m} onClick={() => setYM(m)}
                 className={`px-4 py-3 text-sm font-medium whitespace-nowrap flex flex-col items-center ${ym===m ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400'}`}>
                 <span>{m.split('-')[0]}年{parseInt(m.split('-')[1])}月</span>
-                <span className={`text-[9px] mt-0.5 ${passed ? 'text-red-400' : 'text-gray-300'}`}>
-                  {passed ? '締切済' : `〜${dl}`}
+                <span className={`text-[9px] mt-0.5 ${passed ? 'text-red-400' : notYet ? 'text-gray-300' : 'text-green-500'}`}>
+                  {passed ? '締切済' : notYet ? `${d1m.slice(5)}〜` : `〜${d5m}`}
                 </span>
               </button>
             );
