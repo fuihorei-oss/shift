@@ -1,6 +1,6 @@
 {
   "name": "shift-management",
-  "version": "2.2.6",
+  "version": "2.2.14",
   "private": true,
   "type": "module",
   "scripts": {
