@@ -1,0 +1,38 @@
+name: Deploy to Firebase Hosting
+
+# main ブランチに push されたら、自動でビルドして Firebase Hosting に公開する。
+# Functions / Firestore は対象外（--only hosting）。それらを更新したいときは
+# 手元で `firebase deploy --only functions` を実行すること。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {} # GitHub の画面から手動実行もできるようにする
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Firebase のウェブ設定は src/firebase.js に既定値が入っているため、
+      # ビルド用の secret は不要。
+      - name: Build
+        run: npm run build
+
+      - name: Deploy to Firebase Hosting
+        uses: w9jds/firebase-action@v14.4.0
+        with:
+          args: deploy --only hosting --project shift-97e6f
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
