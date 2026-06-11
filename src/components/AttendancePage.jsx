@@ -23,6 +23,13 @@ function getGPS(){
     navigator.geolocation.getCurrentPosition(res,()=>rej(new Error('位置情報を取得できません\n許可してください')),{timeout:10000,enableHighAccuracy:true});
   });
 }
+// store ドキュメントから出勤場所の配列を取り出す（旧形式の単一店舗にも対応）
+function getStoreLocations(s){
+  if(!s) return [];
+  if(Array.isArray(s.locations)) return s.locations;
+  if(s.lat != null) return [{ name:'店舗', lat:s.lat, lng:s.lng, radius:s.radius??100 }];
+  return [];
+}
 
 export default function AttendancePage() {
   const { user, userData, isAdmin } = useAuth();
@@ -84,11 +91,16 @@ export default function AttendancePage() {
   },[loadAdminData]);
 
   const verifyLocation = async () => {
-    if(!store?.lat) throw new Error('店舗位置が未設定です（管理者に設定を依頼してください）');
+    const locations = getStoreLocations(store);
+    if(locations.length === 0) throw new Error('出勤場所が未設定です（管理者に設定を依頼してください）');
     const pos = await getGPS();
-    const dist = calcDistance(pos.coords.latitude,pos.coords.longitude,store.lat,store.lng);
-    if(dist>(store.radius??100)) throw new Error(`店舗から約${Math.round(dist)}m離れています`);
-    return {lat:pos.coords.latitude,lng:pos.coords.longitude};
+    let nearest = Infinity;
+    for(const loc of locations){
+      const dist = calcDistance(pos.coords.latitude,pos.coords.longitude,loc.lat,loc.lng);
+      if(dist <= (loc.radius??100)) return {lat:pos.coords.latitude,lng:pos.coords.longitude};
+      nearest = Math.min(nearest, dist);
+    }
+    throw new Error(`出勤場所から約${Math.round(nearest)}m離れています`);
   };
 
   const clockIn = async () => {
@@ -183,7 +195,7 @@ export default function AttendancePage() {
         )}
 
         <p className="text-center text-xs text-gray-400">
-          📍 GPS（{store?.lat ? `${store.radius??100}m以内` : '未設定'}）— 店舗付近で出勤登録
+          📍 GPS（{getStoreLocations(store).length > 0 ? `登録場所 ${getStoreLocations(store).length} 件` : '未設定'}）— 出勤場所付近で出勤登録
         </p>
 
         {/* 管理者: 全スタッフの出勤状況 */}

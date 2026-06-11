@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, getDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, getDoc, writeBatch, serverTimestamp, deleteField } from 'firebase/firestore';
 import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { db, auth, getSecondaryAuth } from '../firebase';
 import { useAuth } from '../App';
@@ -707,89 +707,94 @@ function StatsTab() {
 
 // ── 店舗設定 ───────────────────────────────────────────
 function StoreTab() {
-  const [store, setStore] = useState({lat:null,lng:null,radius:100,wifiIp:''});
-  const [saved, setSaved] = useState(false); const [loading, setLoading] = useState(false); const [msg, setMsg] = useState('');
-  useEffect(()=>{ getDoc(doc(db,'settings','store')).then(s=>{ if(s.exists()) setStore(s.data()); }); },[]);
+  // locations: [{ name, lat, lng, radius }] の配列。出勤はいずれかの地点の範囲内ならOK。
+  const [locations, setLocations] = useState([]);
+  const [saved, setSaved] = useState(true); const [loading, setLoading] = useState(false); const [msg, setMsg] = useState('');
 
-  const setCurrentLocation = () => {
+  useEffect(()=>{
+    getDoc(doc(db,'settings','store')).then(s=>{
+      if(!s.exists()) return;
+      const data = s.data();
+      if(Array.isArray(data.locations)) {
+        setLocations(data.locations);
+      } else if (data.lat != null) {
+        // 旧形式（単一店舗）を複数地点形式へ移行
+        setLocations([{ name:'店舗', lat:data.lat, lng:data.lng, radius:data.radius??100 }]);
+        setSaved(false);
+      }
+    });
+  },[]);
+
+  const addCurrentLocation = () => {
     setMsg(''); if(!navigator.geolocation){setMsg('GPSが利用できません');return;}
     setLoading(true);
     navigator.geolocation.getCurrentPosition(
-      pos=>{ setStore(s=>({...s,lat:pos.coords.latitude,lng:pos.coords.longitude})); setSaved(false); setLoading(false); setMsg('現在地を取得しました。保存してください。'); },
-      ()=>{ setMsg('位置情報の取得に失敗しました'); setLoading(false); }
+      pos=>{
+        setLocations(list=>[...list, { name:`出勤場所${list.length+1}`, lat:pos.coords.latitude, lng:pos.coords.longitude, radius:100 }]);
+        setSaved(false); setLoading(false); setMsg('現在地を追加しました。保存してください。');
+      },
+      ()=>{ setMsg('位置情報の取得に失敗しました'); setLoading(false); },
+      {enableHighAccuracy:true, timeout:10000}
     );
   };
 
-  const detectWifiIp = async () => {
-    setMsg(''); setLoading(true);
-    try {
-      const res = await fetch('https://api.ipify.org?format=json');
-      const { ip } = await res.json();
-      setStore(s=>({...s, wifiIp: ip}));
-      setSaved(false);
-      setMsg(`現在のIP（${ip}）を取得しました。保存してください。`);
-    } catch {
-      setMsg('IP取得に失敗しました。インターネット接続を確認してください。');
-    }
-    setLoading(false);
-  };
+  const updateLoc = (i, patch) => { setLocations(list=>list.map((l,idx)=>idx===i?{...l,...patch}:l)); setSaved(false); };
+  const removeLoc = (i) => { setLocations(list=>list.filter((_,idx)=>idx!==i)); setSaved(false); };
 
-  const save = async ()=>{ await setDoc(doc(db,'settings','store'),store,{merge:true}); setSaved(true); setMsg('保存しました！'); };
+  const save = async ()=>{
+    // 複数地点形式で保存し、旧形式・WiFi の残骸フィールドを削除する
+    await setDoc(doc(db,'settings','store'),
+      { locations, lat:deleteField(), lng:deleteField(), radius:deleteField(), wifiIp:deleteField() },
+      {merge:true});
+    setSaved(true); setMsg('保存しました！');
+  };
 
   return (
     <div className="h-full overflow-y-auto p-4">
       <h2 className="font-bold text-base mb-1">店舗設定</h2>
-      <p className="text-xs text-gray-400 mb-5">GPS・WiFi 両方を通過した場合のみ出勤登録可</p>
+      <p className="text-xs text-gray-400 mb-5">登録した出勤場所のいずれかの範囲内にいる場合のみ出勤登録できます</p>
 
-      {/* GPS 設定 */}
-      <div className="bg-white rounded-xl border border-gray-100 p-4 mb-4">
-        <div className="text-sm font-medium text-gray-700 mb-1">📍 GPS 基準位置</div>
-        <p className="text-xs text-gray-400 mb-3">店舗の緯度・経度を登録します</p>
-        {store.lat
-          ? <div className="text-xs text-gray-500 mb-3 space-y-1"><div>緯度: {store.lat?.toFixed(6)}</div><div>経度: {store.lng?.toFixed(6)}</div></div>
-          : <div className="text-xs text-orange-400 mb-3">未設定</div>}
-        <button onClick={setCurrentLocation} disabled={loading}
-          className="w-full py-3 rounded-xl bg-blue-600 text-white text-sm font-semibold disabled:opacity-50">
-          {loading?'取得中...':'📍 現在地を店舗位置に設定'}
-        </button>
-      </div>
-
-      {/* GPS 許容範囲 */}
-      <div className="bg-white rounded-xl border border-gray-100 p-4 mb-4">
-        <div className="text-sm font-medium text-gray-700 mb-1">GPS 許容範囲</div>
-        <p className="text-xs text-gray-400 mb-3">この距離（m）以内でのみ打刻可能</p>
-        <div className="flex items-center gap-3">
-          <input type="range" min="50" max="500" step="50" value={store.radius??100}
-            onChange={e=>{setStore(s=>({...s,radius:Number(e.target.value)}));setSaved(false);}} className="flex-1"/>
-          <span className="text-sm font-bold w-16 text-right">{store.radius??100} m</span>
-        </div>
-      </div>
-
-      {/* WiFi IP 設定 */}
-      <div className="bg-white rounded-xl border border-gray-100 p-4 mb-4">
-        <div className="text-sm font-medium text-gray-700 mb-1">📶 WiFi IP 制限</div>
-        <p className="text-xs text-gray-400 mb-3">
-          店舗のWiFiに接続した状態でボタンを押してIPを登録してください
-        </p>
-        {store.wifiIp ? (
-          <div className="flex items-center gap-3 mb-3">
-            <span className="text-xs font-mono text-gray-600 bg-gray-50 px-3 py-1.5 rounded-lg flex-1">{store.wifiIp}</span>
-            <button
-              onClick={()=>{setStore(s=>({...s,wifiIp:''}));setSaved(false);}}
-              className="text-xs text-red-400 px-2 py-1.5 rounded-lg border border-red-200 active:bg-red-50">
-              削除
-            </button>
+      {/* 出勤場所（複数登録可） */}
+      <div className="space-y-4 mb-4">
+        {locations.length === 0 && (
+          <div className="bg-white rounded-xl border border-gray-100 p-4 text-xs text-orange-400 text-center">
+            出勤場所が未登録です。下のボタンで現在地を追加してください。
           </div>
-        ) : (
-          <div className="text-xs text-orange-400 mb-3">未設定</div>
         )}
-        <button onClick={detectWifiIp} disabled={loading}
-          className="w-full py-3 rounded-xl bg-indigo-600 text-white text-sm font-semibold disabled:opacity-50">
-          {loading ? '取得中...' : '📶 現在のIPを店舗WiFiとして登録'}
-        </button>
+        {locations.map((loc, i) => (
+          <div key={i} className="bg-white rounded-xl border border-gray-100 p-4">
+            <div className="flex items-center justify-between mb-2">
+              <input
+                value={loc.name ?? ''}
+                onChange={e=>updateLoc(i,{name:e.target.value})}
+                placeholder="場所の名前（例: 本店）"
+                className="text-sm font-medium text-gray-700 border-b border-gray-200 focus:border-blue-400 outline-none flex-1 mr-3 py-1"/>
+              <button onClick={()=>removeLoc(i)}
+                className="text-xs text-red-400 px-2 py-1.5 rounded-lg border border-red-200 active:bg-red-50 shrink-0">
+                削除
+              </button>
+            </div>
+            <div className="text-xs text-gray-500 mb-3 space-y-1">
+              <div>緯度: {loc.lat?.toFixed(6)}</div>
+              <div>経度: {loc.lng?.toFixed(6)}</div>
+            </div>
+            <div className="text-xs text-gray-400 mb-1">許容範囲（この距離 m 以内で打刻可能）</div>
+            <div className="flex items-center gap-3">
+              <input type="range" min="50" max="500" step="50" value={loc.radius??100}
+                onChange={e=>updateLoc(i,{radius:Number(e.target.value)})} className="flex-1"/>
+              <span className="text-sm font-bold w-16 text-right">{loc.radius??100} m</span>
+            </div>
+          </div>
+        ))}
       </div>
 
-      {msg && <div className={`rounded-xl p-3 mb-4 text-sm text-center ${saved||msg.includes('取得')?'bg-green-50 text-green-700':'bg-red-50 text-red-600'}`}>{msg}</div>}
+      {/* 現在地を追加 */}
+      <button onClick={addCurrentLocation} disabled={loading}
+        className="w-full py-3 rounded-xl bg-blue-600 text-white text-sm font-semibold disabled:opacity-50 mb-4">
+        {loading?'取得中...':'📍 現在地を出勤場所として追加'}
+      </button>
+
+      {msg && <div className={`rounded-xl p-3 mb-4 text-sm text-center ${saved||msg.includes('追加')?'bg-green-50 text-green-700':'bg-red-50 text-red-600'}`}>{msg}</div>}
       <button onClick={save} className="w-full py-3 rounded-xl bg-gray-900 text-white text-sm font-semibold">保存</button>
     </div>
   );
