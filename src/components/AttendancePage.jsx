@@ -91,38 +91,13 @@ export default function AttendancePage() {
     return {lat:pos.coords.latitude,lng:pos.coords.longitude};
   };
 
-  const verifyWifi = async () => {
-    if(!store?.wifiIp) throw new Error('店舗WiFiが未設定です（管理者に設定を依頼してください）');
-    try {
-      const res = await fetch('https://api.ipify.org?format=json');
-      const { ip } = await res.json();
-      if(ip !== store.wifiIp) throw new Error('mismatch');
-      return ip;
-    } catch(e) {
-      if(e.message==='mismatch') throw new Error('店舗WiFiに接続してください');
-      throw new Error('IPアドレスを確認できません');
-    }
-  };
-
   const clockIn = async () => {
     setLoading(true); setMsg({text:'',ok:true});
     try {
-      // GPS と WiFi の両方が必須
-      const [gpsResult, wifiResult] = await Promise.allSettled([
-        verifyLocation(),
-        verifyWifi(),
-      ]);
-      const gpsOk  = gpsResult.status  === 'fulfilled';
-      const wifiOk = wifiResult.status === 'fulfilled';
-      if (!gpsOk || !wifiOk) {
-        const lines = [];
-        if (!gpsOk)  lines.push(`📍 GPS: ${gpsResult.reason.message}`);
-        if (!wifiOk) lines.push(`📶 WiFi: ${wifiResult.reason.message}`);
-        throw new Error(`出勤できませんでした\n${lines.join('\n')}`);
-      }
+      const gpsResult = await verifyLocation();
       await setDoc(doc(db,'attendance',`${user.uid}_${today}`),{
         userId:user.uid, userName:userData?.name??'', date:today,
-        clockInAt:serverTimestamp(), clockInLocation:gpsResult.value,
+        clockInAt:serverTimestamp(), clockInLocation:gpsResult,
         clockOutAt:null, clockOutLocation:null,
       });
       setMsg({text:'出勤しました！',ok:true});
@@ -208,7 +183,7 @@ export default function AttendancePage() {
         )}
 
         <p className="text-center text-xs text-gray-400">
-          📍 GPS（{store?.lat ? `${store.radius??100}m以内` : '未設定'}）かつ 📶 店舗WiFi — 両方必須
+          📍 GPS（{store?.lat ? `${store.radius??100}m以内` : '未設定'}）— 店舗付近で出勤登録
         </p>
 
         {/* 管理者: 全スタッフの出勤状況 */}
