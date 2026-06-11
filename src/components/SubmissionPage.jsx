@@ -38,6 +38,7 @@ export default function SubmissionPage() {
   const [ym, setYM] = useState(months[0]);
   const [sub, setSub] = useState(null);
   const [weeklyDays, setWeeklyDays] = useState(0);
+  const [startTime, setStartTime] = useState('');
   const [daysOff, setDaysOff] = useState({});
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState('');
@@ -68,9 +69,9 @@ export default function SubmissionPage() {
     getDoc(doc(db, 'submissions', `${user.uid}_${ym}`)).then(snap => {
       if (snap.exists()) {
         const d = snap.data();
-        setSub(d); setWeeklyDays(d.weeklyDays ?? 0); setDaysOff(d.daysOff ?? {});
+        setSub(d); setWeeklyDays(d.weeklyDays ?? 0); setStartTime(d.startTime ?? ''); setDaysOff(d.daysOff ?? {});
       } else {
-        setSub(null); setWeeklyDays(0); setDaysOff({});
+        setSub(null); setWeeklyDays(0); setStartTime(''); setDaysOff({});
       }
     });
   }, [user.uid, ym]);
@@ -79,8 +80,9 @@ export default function SubmissionPage() {
 
   const submit = async () => {
     if (!weeklyDays) { flash('出勤日数を選択してください'); return; }
+    if (!startTime)  { flash('開始時間を選択してください'); return; }
     setLoading(true);
-    const data = { staffId: user.uid, staffName: userData?.name ?? '', yearMonth: ym, weeklyDays, daysOff, submittedAt: new Date().toISOString() };
+    const data = { staffId: user.uid, staffName: userData?.name ?? '', yearMonth: ym, weeklyDays, startTime, daysOff, submittedAt: new Date().toISOString() };
     await setDoc(doc(db, 'submissions', `${user.uid}_${ym}`), data);
     setSub(data);
     // 通知があればクリア
@@ -169,6 +171,31 @@ export default function SubmissionPage() {
                       ${weeklyDays===n ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-200 text-gray-600'}
                       disabled:opacity-40`}>
                     {n}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* 勤務開始時間 */}
+        <div className="bg-white rounded-xl border border-gray-100 p-4">
+          <div className="text-sm font-bold mb-2">勤務開始時間</div>
+          {!canSubmit && submitted ? (
+            <div className="flex items-baseline gap-2">
+              <span className="text-3xl font-bold text-blue-600">{startTime || '未設定'}</span>
+              <span className="text-xs text-gray-400 ml-1">（締め切り後・変更不可）</span>
+            </div>
+          ) : (
+            <>
+              <p className="text-xs text-gray-400 mb-3">{d5} まで変更できます</p>
+              <div className="flex gap-3">
+                {['19:00','20:00'].map(t=>(
+                  <button key={t} onClick={()=>canSubmit&&setStartTime(t)} disabled={!canSubmit}
+                    className={`flex-1 py-3 rounded-xl text-base font-bold border-2 transition-colors
+                      ${startTime===t?'bg-blue-600 border-blue-600 text-white':'border-gray-200 text-gray-600'}
+                      disabled:opacity-40`}>
+                    {t}
                   </button>
                 ))}
               </div>

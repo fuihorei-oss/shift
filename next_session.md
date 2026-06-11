@@ -4,7 +4,7 @@
 https://shift-97e6f.web.app
 
 ## 現在のバージョン
-v1.2.0（package.json）
+v1.3.0（package.json）
 
 ---
 
@@ -130,6 +130,27 @@ users/{uid}
   fcmToken: "FCM デバイストークン（プッシュ通知用）"
 }
 ```
+
+---
+
+---
+
+## 8. 管理者打刻登録・バージョン自動更新（v1.3.0）
+
+### 8-1. 管理者による全スタッフ打刻管理（AttendancePage.jsx）
+- 「現在出勤中のみ」→ 全承認済みスタッフ一覧に変更
+- 各スタッフに出勤登録（緑）・退勤登録（赤）ボタンを表示
+- 30秒自動更新 + 手動更新ボタン
+
+### 8-2. ホーム画面追加時の自動更新（App.jsx / vite.config.js）
+- デプロイ時に `public/version.json` を自動生成（`vite.config.js` プラグイン）
+- アプリ起動時・フォアグラウンド復帰時にバージョンを照合
+- 差異あり → 「新しいバージョンがあります」バナー + 「今すぐ更新」ボタン
+- `firebase.json` で `version.json` を no-cache に設定
+
+### 8-3. Firestore セキュリティ修正（firestore.rules）
+- `attendance` update を管理者のみに制限（スタッフの打刻改ざん防止）
+- `attendance` create を管理者も可能に（他スタッフの出勤登録のため）
 
 ---
 

@@ -16,7 +16,7 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if request.auth.uid == userId || isAdmin();
-      allow create: if request.auth.uid == userId;
+      allow create: if request.auth.uid == userId && request.resource.data.role == 'pending';
       allow update: if isAdmin() || (
         request.auth.uid == userId &&
         request.resource.data.role == resource.data.role
@@ -26,7 +26,10 @@ service cloud.firestore {
 
     match /submissions/{docId} {
       allow read: if isApproved();
-      allow create, update: if (isApproved() &&
+      allow create: if (isApproved() &&
+        request.resource.data.staffId == request.auth.uid) || isAdmin();
+      allow update: if (isApproved() &&
+        resource.data.staffId == request.auth.uid &&
         request.resource.data.staffId == request.auth.uid) || isAdmin();
       allow delete: if isAdmin();
     }
@@ -38,11 +41,9 @@ service cloud.firestore {
 
     match /attendance/{recordId} {
       allow read: if isApproved();
-      allow create: if isApproved() &&
-        request.resource.data.userId == request.auth.uid;
-      allow update: if isApproved() && (
-        resource.data.userId == request.auth.uid || isAdmin()
-      );
+      allow create: if isAdmin() || (isApproved() &&
+        request.resource.data.userId == request.auth.uid);
+      allow update: if isAdmin();
     }
 
     match /staffStats/{staffId} {

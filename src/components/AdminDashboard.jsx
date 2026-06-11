@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, getDoc, writeBatch } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, getDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { db, auth, getSecondaryAuth } from '../firebase';
 import { useAuth } from '../App';
@@ -33,7 +33,8 @@ export default function AdminDashboard() {
 
 // ── スタッフ管理 ──────────────────────────────────────
 function StaffTab() {
-  const { user } = useAuth();
+  const { user, userData } = useAuth();
+  const isAdmin = userData?.role === 'admin';
   const [list, setList] = useState([]);
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({name:'',email:'',password:'',role:'staff'});
@@ -83,7 +84,7 @@ function StaffTab() {
               <div key={s.id} className="bg-orange-50 border border-orange-200 rounded-xl p-4 flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="font-medium text-sm truncate">{s.name}</div>
-                  <div className="text-xs text-gray-400 truncate">{s.email}</div>
+                  {isAdmin && <div className="text-xs text-gray-400 truncate">{s.email}</div>}
                   <span className="mt-1 inline-block text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-600">承認待ち</span>
                 </div>
                 <div className="flex flex-col gap-1 flex-shrink-0">
@@ -106,7 +107,7 @@ function StaffTab() {
           <div key={s.id} className="bg-white rounded-xl border border-gray-100 p-4 flex items-start justify-between gap-2">
             <div className="min-w-0">
               <div className="font-medium text-sm truncate">{s.name}</div>
-              <div className="text-xs text-gray-400 truncate">{s.email}</div>
+              {isAdmin && <div className="text-xs text-gray-400 truncate">{s.email}</div>}
               <span className={`mt-1 inline-block text-xs px-2 py-0.5 rounded-full ${s.role==='admin'?'bg-orange-100 text-orange-700':'bg-gray-100 text-gray-500'}`}>
                 {s.role==='admin'?'管理者':'スタッフ'}
               </span>
@@ -175,6 +176,13 @@ function getRecentMonths() {
 
 const toMin = (t) => { const [h,m]=(t??'00:00').split(':').map(Number); return h*60+m; };
 
+// Firestore Timestamp・ISO文字列・null のいずれでも "HH:MM" に変換
+const tsToTime = (ts) => {
+  if (!ts) return null;
+  const d = ts.toDate ? ts.toDate() : new Date(ts);
+  return d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+};
+
 function resolveStatus(staffId, dateStr, submissions, overrides) {
   const ov = overrides[`${staffId}_${dateStr}`];
   if (ov) return ov;
@@ -202,6 +210,10 @@ function StatsTab() {
   const [incidentMemos,      setIncidentMemos]      = useState({}); // { staffId: { dateStr: memo } }
   const [incidentMemoTarget, setIncidentMemoTarget] = useState(null); // { staffId, dateStr }
   const [incidentMemoText,   setIncidentMemoText]   = useState('');
+  const [notifSent,          setNotifSent]          = useState(false);
+
+  // 月が変わったら通知済みフラグをリセット
+  useEffect(() => { setNotifSent(false); }, [ym]);
 
   useEffect(()=>{
     const load = async () => {
@@ -257,15 +269,16 @@ function StatsTab() {
     const status = resolveStatus(staffId, dateStr, submissions, overrides);
     if (status !== 'confirmed') return null;
     const rec = attMap[staffId]?.[dateStr];
-    if (!rec?.clockIn) return { type:'absent' };
+    if (!rec?.clockInAt) return { type:'absent' };
     // 出勤時刻が設定されていない確定シフトは遅刻評価不可
     const shiftStartTime = shiftStartTimes[`${staffId}_${dateStr}`];
     if (!shiftStartTime) return null;
     const scheduledMin = toMin(shiftStartTime);
-    const clockInMin   = toMin(rec.clockIn);
+    const clockInStr   = tsToTime(rec.clockInAt);
+    const clockInMin   = toMin(clockInStr);
     if (clockInMin > scheduledMin) {
       const shiftEndTime = shiftEndTimes[`${staffId}_${dateStr}`];
-      return { type:'late', time:rec.clockIn, scheduledTime:shiftStartTime, endTime:shiftEndTime, lateMinutes:clockInMin-scheduledMin };
+      return { type:'late', time:clockInStr, scheduledTime:shiftStartTime, endTime:shiftEndTime, lateMinutes:clockInMin-scheduledMin };
     }
     return null;
   };
@@ -318,6 +331,80 @@ function StatsTab() {
 
   const dates = getDatesInMonth(ym);
 
+  // 未提出者（pendingでもsuspendedでもないスタッフで、このymの提出がない人）
+  const nonSubmitters = staffList.filter(
+    s => s.role !== 'pending' && s.role !== 'suspended' && !submissions[s.id]
+  );
+
+  const sendNotifications = async () => {
+    if (!window.confirm(`${nonSubmitters.length}名に提出リマインダーを送信しますか？`)) return;
+    const [y, m] = ym.split('-');
+    const msg = `${y}年${parseInt(m)}月分のシフト提出をお願いします。`;
+    const batch = writeBatch(db);
+    nonSubmitters.forEach(s => {
+      batch.set(doc(db, 'notifications', s.id), {
+        yearMonth: ym,
+        message: msg,
+        sentAt: serverTimestamp(),
+      });
+    });
+    await batch.commit();
+    setNotifSent(true);
+  };
+
+  const downloadCSV = () => {
+    const [y, m] = ym.split('-');
+    const dowLabels = ['日','月','火','水','木','金','土'];
+    const activeStaff = staffList.filter(s => s.role !== 'pending' && s.role !== 'suspended');
+
+    // ── 出勤記録シート ──
+    const attHeader = ['スタッフ名','日付','曜日','出勤時刻','退勤時刻'];
+    const attRows = [];
+    activeStaff.forEach(s => {
+      dates.forEach(ds => {
+        const rec = (attMap[s.id] ?? {})[ds];
+        if (!rec?.clockInAt) return;
+        attRows.push([
+          s.name, ds, dowLabels[new Date(ds).getDay()],
+          tsToTime(rec.clockInAt) ?? '', tsToTime(rec.clockOutAt) ?? '',
+        ]);
+      });
+    });
+
+    // ── 月次サマリーシート ──
+    const sumHeader = ['スタッフ名','出勤日数','遅刻回数','欠勤回数','週希望日数','開始時間'];
+    const sumRows = activeStaff.map(s => {
+      const issueEntries = dates.map(ds => ({ ds, issue: getDayIssue(s.id, ds) })).filter(x => x.issue);
+      const excused = excusedMap[s.id] ?? {};
+      return [
+        s.name,
+        Object.values(attMap[s.id] ?? {}).filter(r => r.clockInAt).length,
+        issueEntries.filter(x => x.issue.type === 'late').length,
+        issueEntries.filter(x => x.issue.type === 'absent' && !excused[x.ds]).length,
+        submissions[s.id]?.weeklyDays ?? '',
+        submissions[s.id]?.startTime ?? '',
+      ];
+    });
+
+    const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const toCSV = (header, rows) =>
+      [header, ...rows].map(r => r.map(esc).join(',')).join('\n');
+
+    const content =
+      `${y}年${parseInt(m)}月 出勤記録\n` +
+      toCSV(attHeader, attRows) +
+      '\n\n月次サマリー\n' +
+      toCSV(sumHeader, sumRows);
+
+    const blob = new Blob(['﻿' + content], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = `シフト管理_${y}年${parseInt(m)}月.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* 月タブ */}
@@ -332,8 +419,47 @@ function StatsTab() {
         </div>
       </div>
 
+      {/* CSV ダウンロードバー */}
+      <div className="bg-white border-b border-gray-50 px-4 py-2 flex justify-end flex-shrink-0">
+        <button onClick={downloadCSV} disabled={loading}
+          className="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 active:bg-gray-200 disabled:opacity-40">
+          ⬇ CSVで保存
+        </button>
+      </div>
+
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {loading && <p className="text-center text-gray-400 text-sm py-8">読み込み中...</p>}
+
+        {/* 未提出者通知バナー */}
+        {!loading && nonSubmitters.length > 0 && (
+          <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-bold text-sm text-orange-700 mb-1">
+                  📋 未提出者 {nonSubmitters.length}名
+                </div>
+                <div className="text-xs text-gray-600 leading-relaxed">
+                  {nonSubmitters.map(s => s.name).join('、')}
+                </div>
+              </div>
+              <button
+                onClick={sendNotifications}
+                disabled={notifSent}
+                className={`flex-shrink-0 text-xs px-3 py-2 rounded-lg font-semibold transition-colors ${
+                  notifSent
+                    ? 'bg-gray-100 text-gray-400 cursor-default'
+                    : 'bg-orange-500 text-white active:opacity-80'
+                }`}>
+                {notifSent ? '通知済み ✓' : '通知を送る'}
+              </button>
+            </div>
+          </div>
+        )}
+        {!loading && nonSubmitters.length === 0 && staffList.length > 0 && (
+          <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 flex items-center gap-2">
+            <span className="text-green-600 text-sm">✅ 全員提出済み</span>
+          </div>
+        )}
 
         {!loading && staffList.map(s=>{
           const issues = dates
@@ -343,7 +469,7 @@ function StatsTab() {
           const lateCount     = issues.filter(x=>x.issue.type==='late').length;
           const absentCount   = issues.filter(x=>x.issue.type==='absent' && !excusedDates[x.ds]).length;
           const excusedCount  = issues.filter(x=>x.issue.type==='absent' && excusedDates[x.ds]).length;
-          const workDays      = Object.values(attMap[s.id]??{}).filter(r=>r.clockIn).length;
+          const workDays      = Object.values(attMap[s.id]??{}).filter(r=>r.clockInAt).length;
 
           return (
             <div key={s.id} className="bg-white rounded-xl border border-gray-100 p-4">
@@ -581,9 +707,10 @@ function StatsTab() {
 
 // ── 店舗設定 ───────────────────────────────────────────
 function StoreTab() {
-  const [store, setStore] = useState({lat:null,lng:null,radius:100});
+  const [store, setStore] = useState({lat:null,lng:null,radius:100,wifiIp:''});
   const [saved, setSaved] = useState(false); const [loading, setLoading] = useState(false); const [msg, setMsg] = useState('');
   useEffect(()=>{ getDoc(doc(db,'settings','store')).then(s=>{ if(s.exists()) setStore(s.data()); }); },[]);
+
   const setCurrentLocation = () => {
     setMsg(''); if(!navigator.geolocation){setMsg('GPSが利用できません');return;}
     setLoading(true);
@@ -592,22 +719,44 @@ function StoreTab() {
       ()=>{ setMsg('位置情報の取得に失敗しました'); setLoading(false); }
     );
   };
+
+  const detectWifiIp = async () => {
+    setMsg(''); setLoading(true);
+    try {
+      const res = await fetch('https://api.ipify.org?format=json');
+      const { ip } = await res.json();
+      setStore(s=>({...s, wifiIp: ip}));
+      setSaved(false);
+      setMsg(`現在のIP（${ip}）を取得しました。保存してください。`);
+    } catch {
+      setMsg('IP取得に失敗しました。インターネット接続を確認してください。');
+    }
+    setLoading(false);
+  };
+
   const save = async ()=>{ await setDoc(doc(db,'settings','store'),store,{merge:true}); setSaved(true); setMsg('保存しました！'); };
+
   return (
     <div className="h-full overflow-y-auto p-4">
       <h2 className="font-bold text-base mb-1">店舗設定</h2>
-      <p className="text-xs text-gray-400 mb-5">出勤打刻時のGPS基準位置</p>
+      <p className="text-xs text-gray-400 mb-5">GPS・WiFi 両方を通過した場合のみ出勤登録可</p>
+
+      {/* GPS 設定 */}
       <div className="bg-white rounded-xl border border-gray-100 p-4 mb-4">
-        <div className="text-sm font-medium text-gray-700 mb-3">店舗の位置</div>
-        {store.lat ? <div className="text-xs text-gray-500 mb-3 space-y-1"><div>緯度: {store.lat?.toFixed(6)}</div><div>経度: {store.lng?.toFixed(6)}</div></div>
+        <div className="text-sm font-medium text-gray-700 mb-1">📍 GPS 基準位置</div>
+        <p className="text-xs text-gray-400 mb-3">店舗の緯度・経度を登録します</p>
+        {store.lat
+          ? <div className="text-xs text-gray-500 mb-3 space-y-1"><div>緯度: {store.lat?.toFixed(6)}</div><div>経度: {store.lng?.toFixed(6)}</div></div>
           : <div className="text-xs text-orange-400 mb-3">未設定</div>}
         <button onClick={setCurrentLocation} disabled={loading}
           className="w-full py-3 rounded-xl bg-blue-600 text-white text-sm font-semibold disabled:opacity-50">
           {loading?'取得中...':'📍 現在地を店舗位置に設定'}
         </button>
       </div>
+
+      {/* GPS 許容範囲 */}
       <div className="bg-white rounded-xl border border-gray-100 p-4 mb-4">
-        <div className="text-sm font-medium text-gray-700 mb-1">許容範囲</div>
+        <div className="text-sm font-medium text-gray-700 mb-1">GPS 許容範囲</div>
         <p className="text-xs text-gray-400 mb-3">この距離（m）以内でのみ打刻可能</p>
         <div className="flex items-center gap-3">
           <input type="range" min="50" max="500" step="50" value={store.radius??100}
@@ -615,6 +764,31 @@ function StoreTab() {
           <span className="text-sm font-bold w-16 text-right">{store.radius??100} m</span>
         </div>
       </div>
+
+      {/* WiFi IP 設定 */}
+      <div className="bg-white rounded-xl border border-gray-100 p-4 mb-4">
+        <div className="text-sm font-medium text-gray-700 mb-1">📶 WiFi IP 制限</div>
+        <p className="text-xs text-gray-400 mb-3">
+          店舗のWiFiに接続した状態でボタンを押してIPを登録してください
+        </p>
+        {store.wifiIp ? (
+          <div className="flex items-center gap-3 mb-3">
+            <span className="text-xs font-mono text-gray-600 bg-gray-50 px-3 py-1.5 rounded-lg flex-1">{store.wifiIp}</span>
+            <button
+              onClick={()=>{setStore(s=>({...s,wifiIp:''}));setSaved(false);}}
+              className="text-xs text-red-400 px-2 py-1.5 rounded-lg border border-red-200 active:bg-red-50">
+              削除
+            </button>
+          </div>
+        ) : (
+          <div className="text-xs text-orange-400 mb-3">未設定</div>
+        )}
+        <button onClick={detectWifiIp} disabled={loading}
+          className="w-full py-3 rounded-xl bg-indigo-600 text-white text-sm font-semibold disabled:opacity-50">
+          {loading ? '取得中...' : '📶 現在のIPを店舗WiFiとして登録'}
+        </button>
+      </div>
+
       {msg && <div className={`rounded-xl p-3 mb-4 text-sm text-center ${saved||msg.includes('取得')?'bg-green-50 text-green-700':'bg-red-50 text-red-600'}`}>{msg}</div>}
       <button onClick={save} className="w-full py-3 rounded-xl bg-gray-900 text-white text-sm font-semibold">保存</button>
     </div>

@@ -68,7 +68,7 @@ export default function ScheduleGrid() {
       const cmap = {};
       attSnap.docs.forEach(d => {
         const r = d.data();
-        if (r.date?.startsWith(ym) && r.clockIn) {
+        if (r.date?.startsWith(ym) && r.clockInAt) {
           cmap[r.date] = (cmap[r.date] ?? 0) + 1;
         }
       });
@@ -95,7 +95,9 @@ export default function ScheduleGrid() {
     const status = getCellStatus(staff.id, day);
     const key = `${staff.id}_${ds}`;
     setCellModal({staffId:staff.id, staffName:staff.name, dateStr:ds, status});
-    setModalStartTime(shiftStartTimes[key] ?? '18:00');
+    // 保存済み時刻 → スタッフ希望時刻 → デフォルト の優先順で初期値を設定
+    const subStart = submissions[staff.id]?.startTime;
+    setModalStartTime(shiftStartTimes[key] ?? subStart ?? '19:00');
     setModalEndTime(shiftEndTimes[key] ?? '22:00');
   };
 

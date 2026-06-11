@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext } from 'react';
+import { useState, useEffect, useCallback, createContext, useContext } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 import { getToken } from 'firebase/messaging';
@@ -19,6 +19,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('submission');
   const [suspendedError, setSuspendedError] = useState('');
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
 
   useEffect(() => {
     let unsubSnapshot = null;
@@ -71,6 +72,23 @@ export default function App() {
       if (unsubSnapshot) unsubSnapshot();
     };
   }, []);
+
+  // バージョンチェック: 起動時とフォアグラウンド復帰時に確認
+  const checkVersion = useCallback(async () => {
+    try {
+      const res = await fetch(`/version.json?t=${Date.now()}`);
+      if (!res.ok) return;
+      const { version } = await res.json();
+      if (version !== __APP_VERSION__) setUpdateAvailable(true);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    checkVersion();
+    const onVisible = () => { if (document.visibilityState === 'visible') checkVersion(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [checkVersion]);
 
   // 承認済みユーザーのプッシュ通知セットアップ
   useEffect(() => {
@@ -148,6 +166,17 @@ export default function App() {
             <span className="text-gray-500 text-xs">▼</span>
           </button>
         </header>
+
+        {updateAvailable && (
+          <div className="bg-blue-600 text-white text-sm py-2 px-4 flex items-center justify-center gap-3 flex-shrink-0">
+            <span>新しいバージョンがあります</span>
+            <button
+              onClick={() => window.location.reload()}
+              className="bg-white text-blue-600 text-xs font-bold px-3 py-1 rounded-full active:opacity-80">
+              今すぐ更新
+            </button>
+          </div>
+        )}
 
         <main className="flex-1 overflow-hidden">
           {activeTab === 'submission' && <SubmissionPage />}
