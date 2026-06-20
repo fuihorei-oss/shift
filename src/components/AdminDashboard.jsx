@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, getDoc, writeBatch, serverTimestamp, deleteField } from 'firebase/firestore';
+import { collection, getDocs, query, where, doc, updateDoc, deleteDoc, setDoc, getDoc, writeBatch, serverTimestamp, deleteField } from 'firebase/firestore';
 import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { db, auth, getSecondaryAuth } from '../firebase';
 import { useAuth } from '../App';
@@ -203,6 +203,13 @@ function StatsTab() {
   const [attMap,     setAtt]   = useState({});
   const [memos,      setMemos] = useState({});
   const [excusedMap, setExcusedMap] = useState({}); // staffId -> { dateStr -> true }
+  const [manualIssuesMap, setManualIssuesMap] = useState({}); // { staffId: { ym: [{id,type,date,note}] } }
+  const [dismissedMap, setDismissedMap] = useState({}); // { staffId: { 'YYYY-MM-DD_type': true } }
+  const [addIssueTarget, setAddIssueTarget] = useState(null); // { staffId, type:'late'|'absent' }
+  const [addIssueDate, setAddIssueDate] = useState('');
+  const [addIssueNote, setAddIssueNote] = useState('');
+  const [editIssueMemoTarget, setEditIssueMemoTarget] = useState(null); // { staffId, issueId }
+  const [editIssueMemoText, setEditIssueMemoText] = useState('');
   const [memoTarget, setMemoTarget] = useState(null);
   const [memoText,   setMemoText]   = useState('');
   const [detailTarget, setDetailTarget] = useState(null);
@@ -218,14 +225,18 @@ function StatsTab() {
   useEffect(()=>{
     const load = async () => {
       setLoading(true);
+      // submissions / attendance は当月分だけ取得（全件読み取りを回避）。
+      // いずれも単一フィールド条件のみで複合インデックス不要。
+      const monthStart = `${ym}-01`;
+      const monthEnd = `${ym}-32`; // 'YYYY-MM-DD' の辞書順で当月末日まで含む上限
       const [uSnap,subSnap,ovSnap,attSnap,memoSnap] = await Promise.all([
         getDocs(collection(db,'users')),
-        getDocs(collection(db,'submissions')),
+        getDocs(query(collection(db,'submissions'), where('yearMonth','==',ym))),
         getDoc(doc(db,'adminOverrides',ym)),
-        getDocs(collection(db,'attendance')),
+        getDocs(query(collection(db,'attendance'), where('date','>=',monthStart), where('date','<',monthEnd))),
         getDocs(collection(db,'staffStats')),
       ]);
-      setStaff(uSnap.docs.map(d=>({id:d.id,...d.data()})));
+      setStaff(uSnap.docs.map(d=>({id:d.id,...d.data()})).filter(u => u.role === 'staff'));
 
       const subs={};
       subSnap.docs.forEach(d=>{ if(d.data().yearMonth===ym) subs[d.data().staffId]=d.data(); });
@@ -249,14 +260,20 @@ function StatsTab() {
       const mm={};
       const em={};
       const im={};
+      const am={};
       memoSnap.docs.forEach(d=>{
         mm[d.id]=d.data().memo??'';
         em[d.id]=d.data().excusedDates??{};
         im[d.id]=d.data().incidentMemos??{};
+        am[d.id]=d.data().manualIssues??{};
       });
+      const dm={};
+      memoSnap.docs.forEach(d=>{ dm[d.id]=d.data().dismissedIssues??{}; });
       setMemos(mm);
       setExcusedMap(em);
       setIncidentMemos(im);
+      setManualIssuesMap(am);
+      setDismissedMap(dm);
       setLoading(false);
     };
     load();
@@ -329,6 +346,37 @@ function StatsTab() {
     setIncidentMemoTarget(null);
   };
 
+  const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+  const saveManualIssue = async (staffId, type, date, note) => {
+    const entry = { id: genId(), type, date, note: note.trim() };
+    const curr = manualIssuesMap[staffId] ?? {};
+    const next = { ...curr, [ym]: [...(curr[ym] ?? []), entry] };
+    setManualIssuesMap(p => ({ ...p, [staffId]: next }));
+    await setDoc(doc(db,'staffStats',staffId), { manualIssues: next }, {merge:true});
+  };
+
+  const deleteManualIssue = async (staffId, issueId) => {
+    const curr = manualIssuesMap[staffId] ?? {};
+    const next = { ...curr, [ym]: (curr[ym] ?? []).filter(e => e.id !== issueId) };
+    setManualIssuesMap(p => ({ ...p, [staffId]: next }));
+    await setDoc(doc(db,'staffStats',staffId), { manualIssues: next }, {merge:true});
+  };
+
+  const saveManualIssueMemo = async (staffId, issueId, note) => {
+    const curr = manualIssuesMap[staffId] ?? {};
+    const next = { ...curr, [ym]: (curr[ym] ?? []).map(e => e.id === issueId ? { ...e, note: note.trim() } : e) };
+    setManualIssuesMap(p => ({ ...p, [staffId]: next }));
+    await setDoc(doc(db,'staffStats',staffId), { manualIssues: next }, {merge:true});
+  };
+
+  const dismissIssue = async (staffId, dateStr, type) => {
+    const curr = dismissedMap[staffId] ?? {};
+    const next = { ...curr, [`${dateStr}_${type}`]: true };
+    setDismissedMap(p => ({ ...p, [staffId]: next }));
+    await setDoc(doc(db,'staffStats',staffId), { dismissedIssues: next }, {merge:true});
+  };
+
   const dates = getDatesInMonth(ym);
 
   // 未提出者（pendingでもsuspendedでもないスタッフで、このymの提出がない人）
@@ -375,12 +423,15 @@ function StatsTab() {
     const sumHeader = ['スタッフ名','出勤日数','遅刻回数','欠勤回数','週希望日数','開始時間'];
     const sumRows = activeStaff.map(s => {
       const issueEntries = dates.map(ds => ({ ds, issue: getDayIssue(s.id, ds) })).filter(x => x.issue);
-      const excused = excusedMap[s.id] ?? {};
+      const excused   = excusedMap[s.id] ?? {};
+      const csvDismissed = dismissedMap[s.id] ?? {};
+      const csvManual    = manualIssuesMap[s.id]?.[ym] ?? [];
+      const filteredEntries = issueEntries.filter(x => !csvDismissed[`${x.ds}_${x.issue.type}`]);
       return [
         s.name,
         Object.values(attMap[s.id] ?? {}).filter(r => r.clockInAt).length,
-        issueEntries.filter(x => x.issue.type === 'late').length,
-        issueEntries.filter(x => x.issue.type === 'absent' && !excused[x.ds]).length,
+        filteredEntries.filter(x => x.issue.type === 'late').length + csvManual.filter(m => m.type === 'late').length,
+        filteredEntries.filter(x => x.issue.type === 'absent' && !excused[x.ds]).length + csvManual.filter(m => m.type === 'absent').length,
         submissions[s.id]?.weeklyDays ?? '',
         submissions[s.id]?.startTime ?? '',
       ];
@@ -462,14 +513,18 @@ function StatsTab() {
         )}
 
         {!loading && staffList.map(s=>{
+          const dismissed     = dismissedMap[s.id] ?? {};
           const issues = dates
             .map(ds=>({ ds, issue: getDayIssue(s.id, ds) }))
-            .filter(x=>x.issue);
+            .filter(x => x.issue && !dismissed[`${x.ds}_${x.issue.type}`]);
           const excusedDates  = excusedMap[s.id] ?? {};
           const lateCount     = issues.filter(x=>x.issue.type==='late').length;
           const absentCount   = issues.filter(x=>x.issue.type==='absent' && !excusedDates[x.ds]).length;
           const excusedCount  = issues.filter(x=>x.issue.type==='absent' && excusedDates[x.ds]).length;
           const workDays      = Object.values(attMap[s.id]??{}).filter(r=>r.clockInAt).length;
+          const manualItems   = manualIssuesMap[s.id]?.[ym] ?? [];
+          const totalLate     = lateCount   + manualItems.filter(m => m.type === 'late').length;
+          const totalAbsent   = absentCount + manualItems.filter(m => m.type === 'absent').length;
 
           return (
             <div key={s.id} className="bg-white rounded-xl border border-gray-100 p-4">
@@ -495,39 +550,17 @@ function StatsTab() {
                   <div className="text-[10px] text-gray-500">出勤日数</div>
                 </div>
                 <div className="bg-orange-50 rounded-lg py-1.5">
-                  <div className="font-bold text-orange-500">{lateCount}</div>
+                  <div className="font-bold text-orange-500">{totalLate}</div>
                   <div className="text-[10px] text-gray-500">遅刻</div>
                 </div>
                 <div className="bg-red-50 rounded-lg py-1.5">
-                  <div className="font-bold text-red-500">{absentCount}</div>
+                  <div className="font-bold text-red-500">{totalAbsent}</div>
                   <div className="text-[10px] text-gray-500">
                     欠勤{excusedCount>0&&<span className="text-gray-400 font-normal"> +{excusedCount}公</span>}
                   </div>
                 </div>
               </div>
 
-              {/* 問題のある日 */}
-              {issues.length > 0 ? (
-                <div className="space-y-1">
-                  {issues.map(({ds, issue})=>{
-                    const isExcused = issue.type==='absent' && !!excusedDates[ds];
-                    return (
-                      <div key={ds} className={`flex items-center justify-between px-3 py-1.5 rounded-lg text-xs
-                        ${issue.type==='late' ? 'bg-orange-50' : isExcused ? 'bg-gray-50' : 'bg-red-50'}`}>
-                        <span className="text-gray-600 font-medium">{formatDate(ds)}</span>
-                        {issue.type==='late'
-                          ? <span className="text-orange-600 font-bold">{issue.lateMinutes}分遅刻（{issue.scheduledTime}→{issue.time}）</span>
-                          : isExcused
-                            ? <span className="text-gray-400 text-xs">公休</span>
-                            : <span className="text-red-600 font-bold">欠勤</span>
-                        }
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="text-xs text-gray-300 text-center py-1">確定シフトなし / 問題なし</div>
-              )}
             </div>
           );
         })}
@@ -543,12 +576,18 @@ function StatsTab() {
             </p>
 
             {(()=>{
+              const detailDismissed = dismissedMap[detailTarget.id] ?? {};
               const allIssues = dates
                 .map(ds=>({ ds, issue: getDayIssue(detailTarget.id, ds) }))
-                .filter(x=>x.issue);
+                .filter(x => x.issue && !detailDismissed[`${x.ds}_${x.issue.type}`]);
               const lateItems   = allIssues.filter(x=>x.issue.type==='late');
               const absentItems = allIssues.filter(x=>x.issue.type==='absent');
               const excused     = excusedMap[detailTarget.id] ?? {};
+              const manualDetItems    = manualIssuesMap[detailTarget.id]?.[ym] ?? [];
+              const manualLateItems   = manualDetItems.filter(m => m.type === 'late');
+              const manualAbsentItems = manualDetItems.filter(m => m.type === 'absent');
+              const totalDetLate    = lateItems.length + manualLateItems.length;
+              const totalDetAbsent  = absentItems.filter(x=>!excused[x.ds]).length + manualAbsentItems.length;
 
               return (
                 <>
@@ -557,7 +596,7 @@ function StatsTab() {
                     <div className="flex items-center gap-2 mb-3">
                       <span className="font-bold text-sm text-orange-600">遅刻</span>
                       <span className="bg-orange-100 text-orange-600 text-xs px-2 py-0.5 rounded-full font-bold">
-                        {lateItems.length}件
+                        {totalDetLate}件
                       </span>
                     </div>
                     {lateItems.length===0 ? (
@@ -566,16 +605,20 @@ function StatsTab() {
                       <div className="space-y-2">
                         {lateItems.map(({ds, issue})=>(
                           <div key={ds} className="bg-orange-50 rounded-xl px-4 py-3">
-                            <div className="flex items-center justify-between">
-                              <div>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0">
                                 <div className="font-semibold text-sm">{formatDate(ds)}</div>
                                 <div className="text-xs text-gray-500 mt-0.5">
                                   勤務時間 {issue.scheduledTime}{issue.endTime ? ` 〜 ${issue.endTime}` : ''}
                                 </div>
                               </div>
-                              <div className="text-right">
-                                <div className="text-orange-600 font-bold text-sm">{issue.time} 打刻</div>
-                                <div className="text-orange-500 text-xs font-semibold">{issue.lateMinutes}分遅刻</div>
+                              <div className="flex items-center gap-2 flex-shrink-0">
+                                <div className="text-right">
+                                  <div className="text-orange-600 font-bold text-sm">{issue.time} 打刻</div>
+                                  <div className="text-orange-500 text-xs font-semibold">{issue.lateMinutes}分遅刻</div>
+                                </div>
+                                <button onClick={()=>dismissIssue(detailTarget.id, ds, 'late')}
+                                  className="text-red-400 text-sm w-6 h-6 flex items-center justify-center rounded-full border border-red-200 active:bg-red-50 flex-shrink-0">×</button>
                               </div>
                             </div>
                             <div className="mt-2 flex items-center gap-2">
@@ -592,6 +635,27 @@ function StatsTab() {
                         ))}
                       </div>
                     )}
+                    {manualLateItems.map(m=>(
+                      <div key={m.id} className="bg-orange-50 rounded-xl px-4 py-3 mt-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-semibold text-sm">{m.date ? formatDate(m.date) : '日付未設定'}</div>
+                            {m.note && <div className="text-xs text-gray-500 mt-0.5 truncate">📝 {m.note}</div>}
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <span className="text-xs text-orange-500 bg-orange-100 px-2 py-0.5 rounded-full">手動</span>
+                            <button onClick={()=>{ setEditIssueMemoTarget({staffId:detailTarget.id,issueId:m.id}); setEditIssueMemoText(m.note??''); }}
+                              className="text-xs border border-gray-200 px-2 py-1 rounded-lg text-gray-500 active:bg-gray-50">メモ</button>
+                            <button onClick={()=>deleteManualIssue(detailTarget.id, m.id)}
+                              className="text-red-400 text-sm w-6 h-6 flex items-center justify-center rounded-full border border-red-200 active:bg-red-50">×</button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    <button onClick={()=>{ setAddIssueTarget({staffId:detailTarget.id,type:'late'}); setAddIssueDate(''); setAddIssueNote(''); }}
+                      className="w-full mt-2 py-2 rounded-xl border border-dashed border-orange-200 text-orange-500 text-xs font-semibold active:bg-orange-50">
+                      ＋ 遅刻を追加
+                    </button>
                   </div>
 
                   {/* 欠勤 */}
@@ -599,7 +663,7 @@ function StatsTab() {
                     <div className="flex items-center gap-2 mb-3">
                       <span className="font-bold text-sm text-red-600">欠勤</span>
                       <span className="bg-red-100 text-red-600 text-xs px-2 py-0.5 rounded-full font-bold">
-                        {absentItems.filter(x=>!excused[x.ds]).length}件
+                        {totalDetAbsent}件
                       </span>
                       {absentItems.some(x=>excused[x.ds]) && (
                         <span className="bg-gray-100 text-gray-500 text-xs px-2 py-0.5 rounded-full">
@@ -617,8 +681,8 @@ function StatsTab() {
                           const et = shiftEndTimes[`${detailTarget.id}_${ds}`];
                           return (
                             <div key={ds} className={`rounded-xl px-4 py-3 ${isExcused?'bg-gray-50':'bg-red-50'}`}>
-                              <div className="flex items-center justify-between">
-                                <div>
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="min-w-0">
                                   <div className="font-semibold text-sm">{formatDate(ds)}</div>
                                   {st && (
                                     <div className="text-xs text-gray-500 mt-0.5">
@@ -626,15 +690,19 @@ function StatsTab() {
                                     </div>
                                   )}
                                 </div>
-                                <button
-                                  onClick={()=>toggleExcuse(detailTarget.id, ds, !isExcused)}
-                                  className={`text-xs px-3 py-1.5 rounded-full font-semibold transition-colors ${
-                                    isExcused
-                                      ? 'bg-gray-200 text-gray-500 active:bg-gray-300'
-                                      : 'bg-red-200 text-red-700 active:bg-red-300'
-                                  }`}>
-                                  {isExcused ? '公休（承認済）' : '欠勤'}
-                                </button>
+                                <div className="flex items-center gap-2 flex-shrink-0">
+                                  <button
+                                    onClick={()=>toggleExcuse(detailTarget.id, ds, !isExcused)}
+                                    className={`text-xs px-3 py-1.5 rounded-full font-semibold transition-colors ${
+                                      isExcused
+                                        ? 'bg-gray-200 text-gray-500 active:bg-gray-300'
+                                        : 'bg-red-200 text-red-700 active:bg-red-300'
+                                    }`}>
+                                    {isExcused ? '公休（承認済）' : '欠勤'}
+                                  </button>
+                                  <button onClick={()=>dismissIssue(detailTarget.id, ds, 'absent')}
+                                    className="text-red-400 text-sm w-6 h-6 flex items-center justify-center rounded-full border border-red-200 active:bg-red-50 flex-shrink-0">×</button>
+                                </div>
                               </div>
                               <div className="mt-2 flex items-center gap-2">
                                 {incidentMemos[detailTarget.id]?.[ds]
@@ -654,6 +722,27 @@ function StatsTab() {
                     <p className="text-[10px] text-gray-400 mt-2 text-center">
                       タップして 欠勤 ↔ 公休（承認済）を切り替えます
                     </p>
+                    {manualAbsentItems.map(m=>(
+                      <div key={m.id} className="bg-red-50 rounded-xl px-4 py-3 mt-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-semibold text-sm">{m.date ? formatDate(m.date) : '日付未設定'}</div>
+                            {m.note && <div className="text-xs text-gray-500 mt-0.5 truncate">📝 {m.note}</div>}
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <span className="text-xs text-red-500 bg-red-100 px-2 py-0.5 rounded-full">手動</span>
+                            <button onClick={()=>{ setEditIssueMemoTarget({staffId:detailTarget.id,issueId:m.id}); setEditIssueMemoText(m.note??''); }}
+                              className="text-xs border border-gray-200 px-2 py-1 rounded-lg text-gray-500 active:bg-gray-50">メモ</button>
+                            <button onClick={()=>deleteManualIssue(detailTarget.id, m.id)}
+                              className="text-red-400 text-sm w-6 h-6 flex items-center justify-center rounded-full border border-red-200 active:bg-red-50">×</button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    <button onClick={()=>{ setAddIssueTarget({staffId:detailTarget.id,type:'absent'}); setAddIssueDate(''); setAddIssueNote(''); }}
+                      className="w-full mt-2 py-2 rounded-xl border border-dashed border-red-200 text-red-500 text-xs font-semibold active:bg-red-50">
+                      ＋ 欠勤を追加
+                    </button>
                   </div>
                 </>
               );
@@ -663,6 +752,61 @@ function StatsTab() {
               className="w-full py-3 rounded-xl border border-gray-200 text-gray-500 text-sm">
               閉じる
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* 遅刻・欠勤 手動追加 */}
+      {addIssueTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-end z-[70]" onClick={e=>e.target===e.currentTarget&&setAddIssueTarget(null)}>
+          <div className="bg-white w-full rounded-t-2xl p-6">
+            <h2 className="font-bold text-base mb-0.5">
+              {addIssueTarget.type==='late' ? '遅刻を追加' : '欠勤を追加'}
+            </h2>
+            <p className="text-xs text-gray-400 mb-4">
+              {staffList.find(s=>s.id===addIssueTarget.staffId)?.name} — {ym.split('-')[0]}年{parseInt(ym.split('-')[1])}月
+            </p>
+            <div className="space-y-3 mb-5">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">日付（任意）</label>
+                <input type="date" value={addIssueDate}
+                  min={`${ym}-01`} max={`${ym}-31`}
+                  onChange={e=>setAddIssueDate(e.target.value)}
+                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">メモ（任意）</label>
+                <input type="text" value={addIssueNote}
+                  onChange={e=>setAddIssueNote(e.target.value)}
+                  placeholder="例: 電話連絡あり"
+                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={()=>setAddIssueTarget(null)} className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-500 text-sm font-semibold">キャンセル</button>
+              <button
+                onClick={()=>{ saveManualIssue(addIssueTarget.staffId, addIssueTarget.type, addIssueDate, addIssueNote); setAddIssueTarget(null); }}
+                className="flex-1 py-3 rounded-xl bg-blue-600 text-white text-sm font-semibold">
+                追加
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 手動追加エントリのメモ編集 */}
+      {editIssueMemoTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-end z-[70]" onClick={e=>e.target===e.currentTarget&&setEditIssueMemoTarget(null)}>
+          <div className="bg-white w-full rounded-t-2xl p-6">
+            <h2 className="font-bold text-base mb-4">メモを編集</h2>
+            <textarea value={editIssueMemoText} onChange={e=>setEditIssueMemoText(e.target.value)} rows={4}
+              placeholder="例: 電話連絡あり、事前申告済み"
+              className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none mb-4"/>
+            <div className="flex gap-2">
+              <button onClick={()=>setEditIssueMemoTarget(null)} className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-500 text-sm font-semibold">キャンセル</button>
+              <button onClick={()=>{ saveManualIssueMemo(editIssueMemoTarget.staffId, editIssueMemoTarget.issueId, editIssueMemoText); setEditIssueMemoTarget(null); }}
+                className="flex-1 py-3 rounded-xl bg-blue-600 text-white text-sm font-semibold">保存</button>
+            </div>
           </div>
         </div>
       )}

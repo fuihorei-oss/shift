@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, sendPasswordResetEmail } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 
@@ -10,6 +10,26 @@ export default function Login({ suspendedError = '' }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resetMode, setResetMode] = useState(false);
+  const [resetMsg, setResetMsg] = useState('');
+  const [resetLoading, setResetLoading] = useState(false);
+
+  const handleReset = async () => {
+    if (!email) { setError('メールアドレスを入力してください'); return; }
+    setResetLoading(true); setError('');
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setResetMsg('パスワードリセットメールを送信しました。メールをご確認ください。');
+    } catch (err) {
+      const msgs = {
+        'auth/user-not-found': 'このメールアドレスは登録されていません',
+        'auth/invalid-email': 'メールアドレスの形式が正しくありません',
+        'auth/invalid-credential': 'このメールアドレスは登録されていません',
+      };
+      setError(msgs[err.code] || 'エラーが発生しました');
+    }
+    setResetLoading(false);
+  };
 
   const handleSubmit = async () => {
     setError('');
@@ -65,41 +85,89 @@ export default function Login({ suspendedError = '' }) {
         )}
 
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-          <div className="flex mb-6 bg-gray-100 rounded-xl p-1 gap-1">
-            {['login', 'signup'].map((m) => (
+          {!resetMode ? (
+            <>
+              <div className="flex mb-6 bg-gray-100 rounded-xl p-1 gap-1">
+                {['login', 'signup'].map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => { setMode(m); setError(''); }}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      mode === m ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'
+                    }`}
+                  >
+                    {m === 'login' ? 'ログイン' : '新規登録'}
+                  </button>
+                ))}
+              </div>
+
+              {error && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-100 rounded-lg text-red-600 text-sm">
+                  {error}
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {mode === 'signup' && (
+                  <Field label="名前" type="text" value={name} onChange={setName} placeholder="山田 太郎" />
+                )}
+                <Field label="メールアドレス" type="email" value={email} onChange={setEmail} placeholder="email@example.com" />
+                <Field label="パスワード" type="password" value={password} onChange={setPassword} placeholder="••••••" />
+              </div>
+
               <button
-                key={m}
-                onClick={() => { setMode(m); setError(''); }}
-                className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  mode === m ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'
-                }`}
+                onClick={handleSubmit}
+                disabled={loading}
+                className="mt-5 w-full bg-blue-600 text-white py-3 rounded-xl font-semibold disabled:opacity-50 active:bg-blue-700"
               >
-                {m === 'login' ? 'ログイン' : '新規登録'}
+                {loading ? '処理中...' : mode === 'login' ? 'ログイン' : '登録する'}
               </button>
-            ))}
-          </div>
 
-          {error && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-100 rounded-lg text-red-600 text-sm">
-              {error}
-            </div>
+              {mode === 'login' && (
+                <button
+                  onClick={() => { setResetMode(true); setError(''); setResetMsg(''); }}
+                  className="mt-3 w-full text-sm text-gray-400 text-center py-1 active:opacity-60"
+                >
+                  パスワードを忘れた方
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <h2 className="font-bold text-base mb-1">パスワードをリセット</h2>
+              <p className="text-xs text-gray-400 mb-4">登録したメールアドレスにリセットリンクを送信します</p>
+
+              {error && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-100 rounded-lg text-red-600 text-sm">
+                  {error}
+                </div>
+              )}
+
+              {resetMsg ? (
+                <div className="p-4 bg-green-50 border border-green-200 rounded-xl text-green-700 text-sm text-center leading-relaxed mb-4">
+                  {resetMsg}
+                </div>
+              ) : (
+                <>
+                  <Field label="メールアドレス" type="email" value={email} onChange={setEmail} placeholder="email@example.com" />
+                  <button
+                    onClick={handleReset}
+                    disabled={resetLoading}
+                    className="mt-4 w-full bg-gray-800 text-white py-3 rounded-xl font-semibold disabled:opacity-50 active:bg-gray-900"
+                  >
+                    {resetLoading ? '送信中...' : 'リセットメールを送信'}
+                  </button>
+                </>
+              )}
+
+              <button
+                onClick={() => { setResetMode(false); setResetMsg(''); setError(''); }}
+                className="mt-3 w-full text-sm text-gray-400 text-center py-1 active:opacity-60"
+              >
+                ← ログインに戻る
+              </button>
+            </>
           )}
-
-          <div className="space-y-3">
-            {mode === 'signup' && (
-              <Field label="名前" type="text" value={name} onChange={setName} placeholder="山田 太郎" />
-            )}
-            <Field label="メールアドレス" type="email" value={email} onChange={setEmail} placeholder="email@example.com" />
-            <Field label="パスワード" type="password" value={password} onChange={setPassword} placeholder="••••••" />
-          </div>
-
-          <button
-            onClick={handleSubmit}
-            disabled={loading}
-            className="mt-5 w-full bg-blue-600 text-white py-3 rounded-xl font-semibold disabled:opacity-50 active:bg-blue-700"
-          >
-            {loading ? '処理中...' : mode === 'login' ? 'ログイン' : '登録する'}
-          </button>
         </div>
       </div>
     </div>

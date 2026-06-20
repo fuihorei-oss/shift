@@ -179,7 +179,7 @@ export default function SubmissionPage() {
             <>
               <p className="text-xs text-gray-400 mb-3">{d5} まで変更できます</p>
               <div className="flex gap-2 flex-wrap">
-                {[1,2,3,4,5,6,7].map(n => (
+                {[1,2,3,4,5,6].map(n => (
                   <button key={n} onClick={() => canSubmit && setWeeklyDays(n)} disabled={!canSubmit}
                     className={`w-10 h-10 rounded-full text-sm font-bold border-2 transition-colors
                       ${weeklyDays===n ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-200 text-gray-600'}

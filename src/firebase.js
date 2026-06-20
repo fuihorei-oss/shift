@@ -1,10 +1,13 @@
 import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
-import { getMessaging, isSupported } from 'firebase/messaging';
 
 // Firebase のウェブ設定はクライアントに配信される公開情報（apiKey 等は秘密ではない）。
-// public/firebase-messaging-sw.js にも同じ値が直書きされている。
 // .env があればそちらを優先し、無い環境（CI など）ではこの既定値でビルドできる。
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyDuXtf1nawB_uQ23nH1h2JHTv1XvBhwtkY',
@@ -16,11 +19,23 @@ const firebaseConfig = {
 };
 
 export const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
-export const auth = getAuth(app);
 
-// messaging は Safari など非対応ブラウザがあるため isSupported で確認してから初期化
-export const messagingPromise = isSupported().then(ok => ok ? getMessaging(app) : null);
+// オフライン永続キャッシュ（IndexedDB）を有効化。
+// 再訪問時はコレクション全件を読み直さず、前回同期以降の差分だけサーバーから取得する
+// （= 読み取り課金を大幅に削減）。環境によっては初期化に失敗しうるため、失敗時は
+// 通常キャッシュへフォールバックし、アプリが起動不能（白画面）になるのを防ぐ。
+function createDb() {
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    });
+  } catch (e) {
+    console.warn('[firebase] 永続キャッシュの初期化に失敗。通常キャッシュで継続します:', e);
+    return getFirestore(app);
+  }
+}
+export const db = createDb();
+export const auth = getAuth(app);
 
 // スタッフ追加時に現在のセッションを維持するためのサブアプリ
 export function getSecondaryAuth() {

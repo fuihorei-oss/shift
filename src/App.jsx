@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback, createContext, useContext } from 'react';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore';
-import { getToken } from 'firebase/messaging';
-import { auth, db, messagingPromise } from './firebase';
+import { onAuthStateChanged, signOut, sendPasswordResetEmail } from 'firebase/auth';
+import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { auth, db } from './firebase';
 import Login from './components/Login';
 import SubmissionPage from './components/SubmissionPage';
 import AttendancePage from './components/AttendancePage';
 import ScheduleGrid from './components/ScheduleGrid';
 import AdminDashboard from './components/AdminDashboard';
+import StaffSchedule from './components/StaffSchedule';
 
 export const AuthContext = createContext(null);
 export const useAuth = () => useContext(AuthContext);
@@ -19,20 +19,19 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('submission');
   const [suspendedError, setSuspendedError] = useState('');
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [pwResetMsg,  setPwResetMsg]  = useState('');
   const [updateAvailable, setUpdateAvailable] = useState(false);
 
   useEffect(() => {
     let unsubSnapshot = null;
 
     const unsubAuth = onAuthStateChanged(auth, async (fu) => {
-      // 前のユーザーのリスナーを解除
       if (unsubSnapshot) { unsubSnapshot(); unsubSnapshot = null; }
 
       if (fu) {
         setUser(fu);
         const ref = doc(db, 'users', fu.uid);
 
-        // 初回ロード
         const snap = await getDoc(ref);
         if (snap.exists()) {
           if (snap.data().role === 'suspended') {
@@ -42,9 +41,9 @@ export default function App() {
           }
           setSuspendedError('');
           setUserData(snap.data());
+          // 管理者は申請・打刻タブを使わないので初期タブをシフト表に設定
+          if (snap.data().role === 'admin') setActiveTab('schedule');
         } else {
-          // ドキュメントが存在しない: 新規登録 or 削除後の再ログイン
-          // どちらも pending として登録し管理者の承認を待つ
           const d = { name: fu.displayName || fu.email.split('@')[0], email: fu.email, role: 'pending', createdAt: new Date().toISOString() };
           await setDoc(ref, d);
           setSuspendedError('');
@@ -52,7 +51,6 @@ export default function App() {
         }
         setLoading(false);
 
-        // リアルタイム監視：停止・削除されたら即サインアウト、ロール変更も即反映
         unsubSnapshot = onSnapshot(ref, (snap) => {
           if (!snap.exists() || snap.data().role === 'suspended') {
             setSuspendedError('このアカウントは削除されています。管理者にお問い合わせください。');
@@ -73,7 +71,6 @@ export default function App() {
     };
   }, []);
 
-  // バージョンチェック: 起動時とフォアグラウンド復帰時に確認
   const checkVersion = useCallback(async () => {
     try {
       const res = await fetch(`/version.json?t=${Date.now()}`);
@@ -90,32 +87,6 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [checkVersion]);
 
-  // 承認済みユーザーのプッシュ通知セットアップ
-  useEffect(() => {
-    if (!user || !userData || !['staff', 'admin'].includes(userData.role)) return;
-    const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY;
-    if (!vapidKey) return;
-
-    (async () => {
-      if (!('Notification' in window) || !('serviceWorker' in navigator)) return;
-      try {
-        const permission = await Notification.requestPermission();
-        if (permission !== 'granted') return;
-
-        const messaging = await messagingPromise;
-        if (!messaging) return;
-
-        const sw = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
-        const token = await getToken(messaging, { vapidKey, serviceWorkerRegistration: sw });
-        if (token) {
-          await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
-        }
-      } catch (e) {
-        console.warn('Push setup:', e.message);
-      }
-    })();
-  }, [user?.uid, userData?.role]); // eslint-disable-line
-
   if (loading) return (
     <div className="flex items-center justify-center h-full bg-gray-50">
       <div className="text-gray-400 text-sm">読み込み中...</div>
@@ -124,7 +95,6 @@ export default function App() {
 
   if (!user) return <Login suspendedError={suspendedError} />;
 
-  // 承認待ちユーザーは専用画面を表示
   if (userData?.role === 'pending') {
     return (
       <div className="flex flex-col h-full bg-gray-50">
@@ -179,17 +149,19 @@ export default function App() {
         )}
 
         <main className="flex-1 overflow-hidden">
-          {activeTab === 'submission' && <SubmissionPage />}
-          {activeTab === 'attend'     && <AttendancePage />}
-          {activeTab === 'schedule'   && isAdmin && <ScheduleGrid />}
-          {activeTab === 'admin'      && isAdmin && <AdminDashboard />}
+          {activeTab === 'submission' && !isAdmin && <SubmissionPage />}
+          {activeTab === 'attend'                 && <AttendancePage />}
+          {activeTab === 'myshift'    && !isAdmin && <StaffSchedule />}
+          {activeTab === 'schedule'   && isAdmin  && <ScheduleGrid />}
+          {activeTab === 'admin'      && isAdmin  && <AdminDashboard />}
         </main>
 
         <nav className="bg-white border-t border-gray-200 flex flex-shrink-0">
-          <TabButton active={activeTab==='submission'} onClick={()=>setActiveTab('submission')} label="申請" icon="📋" />
-          <TabButton active={activeTab==='attend'}     onClick={()=>setActiveTab('attend')}     label="打刻" icon="🕐" />
-          {isAdmin && <TabButton active={activeTab==='schedule'} onClick={()=>setActiveTab('schedule')} label="シフト表" icon="📊" />}
-          {isAdmin && <TabButton active={activeTab==='admin'}    onClick={()=>setActiveTab('admin')}    label="管理"   icon="⚙️" />}
+          {!isAdmin && <TabButton active={activeTab==='submission'} onClick={()=>setActiveTab('submission')} label="申請" icon="📋" />}
+          <TabButton active={activeTab==='attend'} onClick={()=>setActiveTab('attend')} label="打刻" icon="🕐" />
+          {!isAdmin && <TabButton active={activeTab==='myshift'}  onClick={()=>setActiveTab('myshift')}  label="シフト" icon="📅" />}
+          {isAdmin  && <TabButton active={activeTab==='schedule'} onClick={()=>setActiveTab('schedule')} label="シフト表" icon="📊" />}
+          {isAdmin  && <TabButton active={activeTab==='admin'}    onClick={()=>setActiveTab('admin')}    label="管理" icon="⚙️" />}
         </nav>
 
         {showUserMenu && (
@@ -207,13 +179,27 @@ export default function App() {
                   </span>
                 </div>
               </div>
+              {pwResetMsg ? (
+                <div className="mb-3 p-3 bg-green-50 border border-green-200 rounded-xl text-green-700 text-sm text-center">
+                  {pwResetMsg}
+                </div>
+              ) : (
+                <button
+                  onClick={async () => {
+                    await sendPasswordResetEmail(auth, user.email);
+                    setPwResetMsg('パスワードリセットメールを送信しました');
+                  }}
+                  className="w-full py-3 rounded-xl border border-gray-200 text-gray-600 text-sm font-semibold active:bg-gray-50 mb-2">
+                  パスワードを変更
+                </button>
+              )}
               <button
                 onClick={() => { setShowUserMenu(false); signOut(auth); }}
                 className="w-full py-3 rounded-xl border border-red-200 text-red-500 text-sm font-semibold active:bg-red-50">
                 サインアウト
               </button>
               <button
-                onClick={() => setShowUserMenu(false)}
+                onClick={() => { setShowUserMenu(false); setPwResetMsg(''); }}
                 className="mt-2 w-full py-3 rounded-xl border border-gray-200 text-gray-400 text-sm">
                 閉じる
               </button>
