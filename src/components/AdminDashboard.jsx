@@ -84,7 +84,6 @@ function StaffTab() {
               <div key={s.id} className="bg-orange-50 border border-orange-200 rounded-xl p-4 flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="font-medium text-sm truncate">{s.name}</div>
-                  {isAdmin && <div className="text-xs text-gray-400 truncate">{s.email}</div>}
                   <span className="mt-1 inline-block text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-600">承認待ち</span>
                 </div>
                 <div className="flex flex-col gap-1 flex-shrink-0">
@@ -107,7 +106,6 @@ function StaffTab() {
           <div key={s.id} className="bg-white rounded-xl border border-gray-100 p-4 flex items-start justify-between gap-2">
             <div className="min-w-0">
               <div className="font-medium text-sm truncate">{s.name}</div>
-              {isAdmin && <div className="text-xs text-gray-400 truncate">{s.email}</div>}
               <span className={`mt-1 inline-block text-xs px-2 py-0.5 rounded-full ${s.role==='admin'?'bg-orange-100 text-orange-700':'bg-gray-100 text-gray-500'}`}>
                 {s.role==='admin'?'管理者':'スタッフ'}
               </span>
